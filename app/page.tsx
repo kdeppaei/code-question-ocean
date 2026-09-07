@@ -1,0 +1,438 @@
+'use client';
+
+import { useEffect, useMemo, useState } from 'react';
+import {
+  ArrowLeft,
+  BookOpen,
+  Braces,
+  Bug,
+  ChartNoAxesColumnIncreasing,
+  Check,
+  CheckCircle2,
+  ChevronRight,
+  Circle,
+  Clock3,
+  Code2,
+  Database,
+  Flame,
+  House,
+  Lightbulb,
+  ListChecks,
+  Moon,
+  Play,
+  RotateCcw,
+  Search,
+  Send,
+  Sparkles,
+  Star,
+  Sun,
+  TerminalSquare,
+  TestTube2,
+  Trophy,
+  XCircle,
+} from 'lucide-react';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Progress } from '@/components/ui/progress';
+import { Textarea } from '@/components/ui/textarea';
+import {
+  languageMeta,
+  lessons,
+  problems,
+  type Difficulty,
+  type Language,
+  type Lesson,
+  type Problem,
+} from './content';
+
+type View = 'home' | 'problems' | 'workspace' | 'learn' | 'progress' | 'favorites';
+type RunResult = { label: string; input: string; output: string; passed: boolean };
+type HistoryItem = { id: number; passed: boolean; at: string };
+type LearningState = {
+  solved: number[];
+  attempted: number[];
+  wrong: number[];
+  favorites: number[];
+  submissions: number;
+  successful: number;
+  history: HistoryItem[];
+  today: string;
+  todayCount: number;
+};
+
+const emptyLearningState: LearningState = {
+  solved: [], attempted: [], wrong: [], favorites: [], submissions: 0,
+  successful: 0, history: [], today: '', todayCount: 0,
+};
+
+const languageIcons: Record<Language, typeof Braces> = {
+  C: Braces,
+  'C++': Code2,
+  Python: TerminalSquare,
+  SQL: Database,
+  GDB: Bug,
+};
+
+const navItems: { view: View; label: string; icon: typeof House }[] = [
+  { view: 'home', label: '學習總覽', icon: House },
+  { view: 'problems', label: '題庫', icon: ListChecks },
+  { view: 'learn', label: '教學路徑', icon: BookOpen },
+  { view: 'progress', label: '學習分析', icon: ChartNoAxesColumnIncreasing },
+  { view: 'favorites', label: '收藏題目', icon: Star },
+];
+
+const difficultyClass: Record<Difficulty, string> = {
+  簡單: 'text-emerald-700 bg-emerald-50 dark:bg-emerald-950/40 dark:text-emerald-300',
+  中等: 'text-amber-700 bg-amber-50 dark:bg-amber-950/40 dark:text-amber-300',
+  困難: 'text-rose-700 bg-rose-50 dark:bg-rose-950/40 dark:text-rose-300',
+};
+
+const dateKey = () => new Date().toISOString().slice(0, 10);
+
+function normalizeCode(value: string) {
+  return value.toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+function nextUnique(list: number[], value: number) {
+  return list.includes(value) ? list : [...list, value];
+}
+
+function PageTitle({ eyebrow, title, copy }: { eyebrow: string; title: string; copy: string }) {
+  return (
+    <div>
+      <p className="text-xs font-black tracking-[.14em] text-primary">{eyebrow}</p>
+      <h1 className="mt-1 text-2xl font-black tracking-tight md:text-3xl">{title}</h1>
+      <p className="mt-2 text-sm leading-6 text-muted-foreground">{copy}</p>
+    </div>
+  );
+}
+
+export default function Home() {
+  const [view, setView] = useState<View>('home');
+  const [selectedProblem, setSelectedProblem] = useState<Problem>(problems[0]);
+  const [selectedLesson, setSelectedLesson] = useState<Lesson | null>(null);
+  const [code, setCode] = useState(problems[0].starter);
+  const [results, setResults] = useState<RunResult[]>([]);
+  const [resultMode, setResultMode] = useState<'idle' | 'run' | 'submit'>('idle');
+  const [search, setSearch] = useState('');
+  const [languageFilter, setLanguageFilter] = useState<'全部' | Language>('全部');
+  const [difficultyFilter, setDifficultyFilter] = useState<'全部' | Difficulty>('全部');
+  const [learning, setLearning] = useState<LearningState>(emptyLearningState);
+  const [hydrated, setHydrated] = useState(false);
+  const [dark, setDark] = useState(false);
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('codedive-learning-v1');
+      const theme = localStorage.getItem('codedive-theme');
+      if (saved) setLearning({ ...emptyLearningState, ...JSON.parse(saved) });
+      if (theme === 'dark') {
+        setDark(true);
+        document.documentElement.classList.add('dark');
+      }
+    } catch {
+      // Corrupt local state falls back to an empty learning profile.
+    }
+    setHydrated(true);
+  }, []);
+
+  useEffect(() => {
+    if (hydrated) localStorage.setItem('codedive-learning-v1', JSON.stringify(learning));
+  }, [learning, hydrated]);
+
+  const todayCount = learning.today === dateKey() ? learning.todayCount : 0;
+  const accuracy = learning.submissions ? Math.round((learning.successful / learning.submissions) * 100) : 0;
+  const displayDate = hydrated
+    ? new Intl.DateTimeFormat('zh-TW', { month: 'long', day: 'numeric', weekday: 'short' }).format(new Date())
+    : '今日學習';
+
+  const filteredProblems = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    return problems.filter((problem) => {
+      const matchesQuery = !query || `${problem.title} ${problem.topic} ${problem.language}`.toLowerCase().includes(query);
+      const matchesLanguage = languageFilter === '全部' || problem.language === languageFilter;
+      const matchesDifficulty = difficultyFilter === '全部' || problem.difficulty === difficultyFilter;
+      return matchesQuery && matchesLanguage && matchesDifficulty;
+    });
+  }, [search, languageFilter, difficultyFilter]);
+
+  const openProblem = (problem: Problem) => {
+    setSelectedProblem(problem);
+    setCode(problem.starter);
+    setResults([]);
+    setResultMode('idle');
+    setView('workspace');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const quickStart = () => {
+    const unsolved = problems.filter((problem) => !learning.solved.includes(problem.id));
+    const pool = unsolved.length ? unsolved : problems;
+    openProblem(pool[Math.floor(Math.random() * pool.length)]);
+  };
+
+  const toggleTheme = () => {
+    const next = !dark;
+    setDark(next);
+    document.documentElement.classList.toggle('dark', next);
+    localStorage.setItem('codedive-theme', next ? 'dark' : 'light');
+  };
+
+  const toggleFavorite = (id: number) => {
+    setLearning((current) => ({
+      ...current,
+      favorites: current.favorites.includes(id)
+        ? current.favorites.filter((item) => item !== id)
+        : [...current.favorites, id],
+    }));
+  };
+
+  const evaluate = (mode: 'run' | 'submit') => {
+    const normalized = normalizeCode(code);
+    const checks = mode === 'run' ? selectedProblem.checks.slice(0, 2) : selectedProblem.checks;
+    const evaluated = checks.map((check) => ({
+      label: check.label,
+      input: check.input,
+      output: check.output,
+      passed: check.tokens.every((token) => normalized.includes(normalizeCode(token))),
+    }));
+    const passed = evaluated.every((item) => item.passed);
+    setResults(evaluated);
+    setResultMode(mode);
+
+    if (mode === 'submit') {
+      const id = selectedProblem.id;
+      setLearning((current) => {
+        const isToday = current.today === dateKey();
+        return {
+          ...current,
+          attempted: nextUnique(current.attempted, id),
+          solved: passed ? nextUnique(current.solved, id) : current.solved,
+          wrong: passed ? current.wrong.filter((item) => item !== id) : nextUnique(current.wrong, id),
+          submissions: current.submissions + 1,
+          successful: current.successful + (passed ? 1 : 0),
+          history: [{ id, passed, at: new Date().toISOString() }, ...current.history].slice(0, 20),
+          today: dateKey(),
+          todayCount: (isToday ? current.todayCount : 0) + (passed && !current.solved.includes(id) ? 1 : 0),
+        };
+      });
+    }
+  };
+
+  const changeView = (next: View) => {
+    setView(next);
+    if (next !== 'learn') setSelectedLesson(null);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  return (
+    <div className="min-h-screen bg-background text-foreground">
+      <a href="#main-content" className="fixed left-3 top-3 z-50 -translate-y-24 rounded-lg bg-primary px-4 py-2 font-bold text-primary-foreground focus:translate-y-0">跳到主要內容</a>
+
+      <aside className="fixed inset-y-0 left-0 z-30 hidden w-60 border-r bg-sidebar px-3 py-4 lg:flex lg:flex-col">
+        <button onClick={() => changeView('home')} className="flex items-center gap-3 rounded-xl px-2 py-2 text-left">
+          <span className="grid size-10 place-items-center rounded-xl bg-primary font-mono text-sm font-black text-primary-foreground">{'</>'}</span>
+          <span><span className="block text-[10px] font-black tracking-[.18em] text-primary">CODEDIVE</span><strong className="block text-base">程式題海</strong></span>
+        </button>
+        <nav className="mt-7 grid gap-1" aria-label="主要導覽">
+          {navItems.map(({ view: itemView, label, icon: Icon }) => (
+            <Button key={itemView} variant="ghost" onClick={() => changeView(itemView)} className={`h-11 justify-start gap-3 px-3 ${view === itemView || (view === 'workspace' && itemView === 'problems') ? 'bg-primary/10 text-primary hover:bg-primary/15 hover:text-primary' : 'text-muted-foreground'}`}>
+              <Icon className="size-[18px]" />{label}
+              {itemView === 'favorites' && learning.favorites.length > 0 && <span className="ml-auto rounded-full bg-secondary px-2 py-0.5 text-[10px]">{learning.favorites.length}</span>}
+            </Button>
+          ))}
+        </nav>
+
+        <div className="mt-7 px-3">
+          <div className="mb-2 flex items-center justify-between text-xs"><span className="font-bold">每日目標</span><span className="font-mono text-primary">{Math.min(todayCount, 10)} / 10</span></div>
+          <Progress value={Math.min(todayCount * 10, 100)} className="[&_[data-slot=progress-track]]:h-1.5" />
+        </div>
+        <div className="mt-auto rounded-xl border bg-primary/5 p-4 text-xs leading-5 text-muted-foreground">
+          <strong className="mb-1 flex items-center gap-2 text-foreground"><Sparkles className="size-4 text-primary" />本機學習紀錄</strong>
+          答題、錯題與收藏會自動留在這台裝置，不需登入。
+        </div>
+      </aside>
+
+      <main className="min-h-screen pb-20 lg:pb-0 lg:pl-60" id="main-content" tabIndex={-1}>
+        <header className="sticky top-0 z-20 border-b bg-background/90 backdrop-blur-xl">
+          <div className="mx-auto flex h-16 max-w-[1480px] items-center justify-between gap-4 px-4 md:px-7">
+            <div className="flex min-w-0 items-center gap-3 lg:hidden">
+              <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-primary font-mono text-xs font-black text-primary-foreground">{'</>'}</span>
+              <div className="min-w-0"><strong className="block truncate">CodeDive 程式題海</strong><span className="block text-[10px] text-muted-foreground">LEARN · CODE · PRACTICE</span></div>
+            </div>
+            <div className="hidden min-w-0 lg:block">
+              <p className="text-[11px] font-bold text-primary">{displayDate}</p>
+              <strong className="block truncate text-lg">{view === 'workspace' ? `${selectedProblem.id}. ${selectedProblem.title}` : navItems.find((item) => item.view === view)?.label || '程式題海'}</strong>
+            </div>
+            <div className="ml-auto flex items-center gap-2">
+              <Button variant="outline" className="hidden h-9 gap-2 sm:flex" onClick={quickStart}><Play className="size-4" />隨機一題</Button>
+              <Button aria-label="切換深色模式" variant="outline" size="icon-lg" onClick={toggleTheme}>{dark ? <Sun /> : <Moon />}</Button>
+            </div>
+          </div>
+        </header>
+
+        {view === 'home' && (
+          <div className="mx-auto max-w-[1380px] space-y-7 p-4 md:p-7">
+            <section className="relative overflow-hidden rounded-2xl border bg-card p-6 shadow-sm md:p-8">
+              <div className="absolute -right-16 -top-20 size-64 rounded-full bg-primary/10 blur-3xl" aria-hidden="true" />
+              <div className="relative grid gap-8 xl:grid-cols-[1.35fr_.65fr] xl:items-end">
+                <div>
+                  <Badge className="mb-4 bg-primary/10 text-primary"><Flame className="mr-1 size-3" />今日學習工作台</Badge>
+                  <h1 className="max-w-3xl text-3xl font-black leading-[1.13] tracking-[-.04em] md:text-5xl">學懂觀念，寫出程式，<br className="hidden sm:block" />用題目驗證自己。</h1>
+                  <p className="mt-4 max-w-2xl text-sm leading-7 text-muted-foreground md:text-base">以 LeetCode 式解題流程為核心，串起 C、C++、Python、SQL 與 GDB 的繁體中文教學。每題都有提示、範例、結構檢查與詳解。</p>
+                  <div className="mt-6 flex flex-wrap gap-2"><Button className="h-11 gap-2 px-5" onClick={() => changeView('problems')}><ListChecks />開始選題</Button><Button className="h-11 gap-2 px-5" variant="outline" onClick={() => changeView('learn')}><BookOpen />先看教學</Button></div>
+                </div>
+                <div className="rounded-2xl border bg-secondary/60 p-5">
+                  <div className="flex items-center justify-between"><div><p className="text-xs font-bold text-muted-foreground">TODAY</p><strong className="mt-1 block text-lg">每日 10 題</strong></div><span className="font-mono text-2xl font-black text-primary">{Math.min(todayCount, 10)}<small className="text-sm text-muted-foreground"> / 10</small></span></div>
+                  <Progress value={Math.min(todayCount * 10, 100)} className="mt-5 [&_[data-slot=progress-track]]:h-2" />
+                  <p className="mt-3 text-xs leading-5 text-muted-foreground">{todayCount ? '今天已經開始累積，繼續保持節奏。' : '完成第一題，建立今天的學習紀錄。'}</p>
+                </div>
+              </div>
+            </section>
+
+            <section className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+              {[
+                ['題庫總量', `${problems.length}`, '五個專項'],
+                ['已解決', `${learning.solved.length}`, `完成 ${Math.round((learning.solved.length / problems.length) * 100)}%`],
+                ['提交正確率', `${accuracy}%`, `${learning.submissions} 次提交`],
+                ['待複習', `${learning.wrong.length}`, '來自未通過題目'],
+              ].map(([label, value, foot]) => <article key={label} className="rounded-xl border bg-card p-4 shadow-sm md:p-5"><span className="text-xs font-bold text-muted-foreground">{label}</span><strong className="mt-2 block font-mono text-2xl font-black md:text-3xl">{value}</strong><span className="mt-1 block text-[11px] text-muted-foreground">{foot}</span></article>)}
+            </section>
+
+            <section>
+              <div className="mb-4 flex items-end justify-between"><div><h2 className="text-xl font-black">五條專項路線</h2><p className="mt-1 text-sm text-muted-foreground">每條路線都有教學章節與漸進題目。</p></div><Button variant="ghost" className="hidden text-primary sm:flex" onClick={() => changeView('problems')}>全部題目 <ChevronRight /></Button></div>
+              <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
+                {(Object.keys(languageMeta) as Language[]).map((language) => {
+                  const meta = languageMeta[language];
+                  const Icon = languageIcons[language];
+                  const total = problems.filter((problem) => problem.language === language).length;
+                  const solved = problems.filter((problem) => problem.language === language && learning.solved.includes(problem.id)).length;
+                  return <button key={language} onClick={() => { setLanguageFilter(language); changeView('problems'); }} className="group rounded-2xl border bg-card p-4 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md md:p-5"><span className="mb-5 grid size-11 place-items-center rounded-xl" style={{ background: meta.soft, color: meta.color }}><Icon className="size-5" /></span><div className="flex items-center justify-between"><strong className="text-lg">{language}</strong><span className="font-mono text-[10px] text-muted-foreground">{solved}/{total}</span></div><p className="mt-1 min-h-10 text-xs leading-5 text-muted-foreground">{meta.description}</p><div className="mt-4 h-1.5 overflow-hidden rounded-full bg-secondary"><div className="h-full rounded-full transition-all" style={{ width: `${total ? solved / total * 100 : 0}%`, background: meta.color }} /></div></button>;
+                })}
+              </div>
+            </section>
+
+            <section className="grid gap-5 xl:grid-cols-[1.35fr_.65fr]">
+              <div className="rounded-2xl border bg-card shadow-sm">
+                <div className="flex items-center justify-between border-b p-5"><div><h2 className="font-black">建議下一題</h2><p className="mt-1 text-xs text-muted-foreground">依尚未完成的題目推薦</p></div><Button variant="ghost" size="sm" onClick={() => changeView('problems')}>瀏覽題庫</Button></div>
+                <div className="divide-y">{problems.filter((p) => !learning.solved.includes(p.id)).slice(0, 4).map((problem) => <ProblemRow key={problem.id} problem={problem} learning={learning} onOpen={openProblem} />)}</div>
+              </div>
+              <aside className="rounded-2xl border bg-[#edf6ff] p-6 text-[#17365d] shadow-sm dark:bg-blue-950/40 dark:text-blue-100">
+                <div className="flex items-center gap-2 text-xs font-black tracking-[.12em] text-primary"><BookOpen className="size-4" />LEARN → PRACTICE</div>
+                <h2 className="mt-4 text-2xl font-black">今天先弄懂<br />「指標與記憶體」</h2>
+                <p className="mt-3 text-sm leading-6 text-[#546d88] dark:text-blue-200/70">8 分鐘短篇教學，接著用 C 指標交換題立即驗證。</p>
+                <pre className="my-5 overflow-hidden rounded-xl bg-white/80 p-4 font-mono text-xs leading-6 text-slate-700 dark:bg-slate-950/70 dark:text-slate-200"><code>{'int *p = &score;\n*p += 5;'}</code></pre>
+                <Button variant="outline" className="w-full justify-between border-primary/20 bg-white text-primary dark:bg-slate-950" onClick={() => { setSelectedLesson(lessons[0]); changeView('learn'); }}>開啟教學 <ChevronRight /></Button>
+              </aside>
+            </section>
+          </div>
+        )}
+
+        {view === 'problems' && (
+          <div className="mx-auto max-w-[1380px] space-y-6 p-4 md:p-7">
+            <PageTitle eyebrow="PROBLEM SET" title="選一題，開始解題" copy="依語言、難度或主題搜尋。完成狀態、錯題與收藏會保留在本機。" />
+            <div className="grid gap-3 rounded-2xl border bg-card p-4 shadow-sm md:grid-cols-[minmax(0,1fr)_auto_auto]">
+              <div className="relative"><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" /><Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜尋題目或主題…" className="h-10 pl-9" aria-label="搜尋題目" /></div>
+              <select value={languageFilter} onChange={(event) => setLanguageFilter(event.target.value as '全部' | Language)} className="h-10 rounded-lg border bg-background px-3 text-sm" aria-label="語言篩選"><option>全部</option>{Object.keys(languageMeta).map((language) => <option key={language}>{language}</option>)}</select>
+              <select value={difficultyFilter} onChange={(event) => setDifficultyFilter(event.target.value as '全部' | Difficulty)} className="h-10 rounded-lg border bg-background px-3 text-sm" aria-label="難度篩選"><option>全部</option><option>簡單</option><option>中等</option><option>困難</option></select>
+            </div>
+            <div className="overflow-hidden rounded-2xl border bg-card shadow-sm">
+              <div className="hidden grid-cols-[60px_minmax(280px,1fr)_120px_120px_110px] gap-3 border-b bg-secondary/50 px-5 py-3 text-xs font-bold text-muted-foreground md:grid"><span>狀態</span><span>題目</span><span>專項</span><span>難度</span><span>通過率</span></div>
+              <div className="divide-y">{filteredProblems.length ? filteredProblems.map((problem) => <ProblemRow key={problem.id} problem={problem} learning={learning} onOpen={openProblem} detailed />) : <div className="p-12 text-center"><Search className="mx-auto size-8 text-muted-foreground/50" /><strong className="mt-3 block">找不到符合的題目</strong><p className="mt-1 text-sm text-muted-foreground">請調整搜尋文字或篩選條件。</p></div>}</div>
+            </div>
+          </div>
+        )}
+
+        {view === 'workspace' && (
+          <div className="mx-auto max-w-[1600px] p-3 md:p-4">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border bg-card p-2 shadow-sm">
+              <Button variant="ghost" className="gap-2" onClick={() => changeView('problems')}><ArrowLeft />返回題庫</Button>
+              <div className="flex items-center gap-1"><Button variant="ghost" size="icon" aria-label="收藏題目" onClick={() => toggleFavorite(selectedProblem.id)}><Star className={learning.favorites.includes(selectedProblem.id) ? 'fill-amber-400 text-amber-500' : ''} /></Button><Button variant="ghost" size="sm" onClick={() => { const index = problems.findIndex((problem) => problem.id === selectedProblem.id); openProblem(problems[(index + 1) % problems.length]); }}>下一題 <ChevronRight /></Button></div>
+            </div>
+            <div className="grid min-h-[calc(100vh-145px)] gap-3 xl:grid-cols-[.88fr_1.12fr]">
+              <section className="overflow-hidden rounded-xl border bg-card shadow-sm">
+                <div className="border-b px-5 py-4"><div className="flex flex-wrap items-center gap-2"><Badge variant="outline">{selectedProblem.language}</Badge><span className={`rounded-full px-2.5 py-1 text-xs font-bold ${difficultyClass[selectedProblem.difficulty]}`}>{selectedProblem.difficulty}</span><span className="text-xs text-muted-foreground">{selectedProblem.topic}</span></div><h1 className="mt-4 text-2xl font-black tracking-tight">{selectedProblem.id}. {selectedProblem.title}</h1><div className="mt-3 flex gap-4 text-xs text-muted-foreground"><span className="flex items-center gap-1"><CheckCircle2 className="size-3.5" />通過率 {selectedProblem.acceptance}%</span><span className="flex items-center gap-1"><Star className="size-3.5" />{learning.favorites.includes(selectedProblem.id) ? '已收藏' : '可收藏'}</span></div></div>
+                <div className="space-y-6 p-5 text-sm leading-7 md:p-6">
+                  <div><h2 className="mb-2 font-black">題目描述</h2><p className="text-muted-foreground">{selectedProblem.description}</p><p className="mt-3">{selectedProblem.task}</p></div>
+                  <div className="space-y-3">{selectedProblem.examples.map((example, index) => <div key={index}><h3 className="mb-2 text-xs font-black">範例 {index + 1}</h3><div className="rounded-xl bg-secondary/70 p-4 font-mono text-xs leading-6"><div><span className="text-muted-foreground">輸入：</span>{example.input}</div><div><span className="text-muted-foreground">輸出：</span>{example.output}</div>{example.note && <div className="mt-1 text-muted-foreground">說明：{example.note}</div>}</div></div>)}</div>
+                  <div><h2 className="mb-2 font-black">限制</h2><ul className="list-inside list-disc space-y-1 text-muted-foreground">{selectedProblem.constraints.map((item) => <li key={item}>{item}</li>)}</ul></div>
+                  <details className="rounded-xl border bg-secondary/30 p-4"><summary className="flex cursor-pointer list-none items-center gap-2 font-bold text-primary"><Lightbulb className="size-4" />需要提示？</summary><ol className="mt-3 list-inside list-decimal space-y-2 text-muted-foreground">{selectedProblem.hints.map((hint) => <li key={hint}>{hint}</li>)}</ol></details>
+                </div>
+              </section>
+
+              <section className="flex min-h-[680px] flex-col overflow-hidden rounded-xl border bg-card shadow-sm">
+                <div className="flex items-center justify-between border-b bg-[#111827] px-4 py-3 text-slate-100"><div className="flex items-center gap-2"><Code2 className="size-4 text-blue-400" /><strong className="text-sm">解答編輯器</strong></div><Badge className="border-white/10 bg-white/10 text-slate-200">{selectedProblem.language}</Badge></div>
+                <div className="relative min-h-[390px] flex-1 bg-[#0d1321]">
+                  <div className="absolute inset-y-0 left-0 w-11 border-r border-white/5 bg-[#0a101c] pt-4 text-right font-mono text-xs leading-6 text-slate-600" aria-hidden="true">{code.split('\n').map((_, index) => <div key={index} className="pr-3">{index + 1}</div>)}</div>
+                  <Textarea value={code} onChange={(event) => { setCode(event.target.value); setResultMode('idle'); setResults([]); }} spellCheck={false} aria-label="程式碼編輯器" className="h-full min-h-[390px] resize-none rounded-none border-0 bg-transparent py-4 pl-14 pr-4 font-mono text-[13px] leading-6 text-slate-100 caret-blue-400 focus-visible:ring-0" />
+                </div>
+                <div className="border-t">
+                  <div className="flex items-center justify-between border-b px-4 py-3"><strong className="flex items-center gap-2 text-sm"><TestTube2 className="size-4 text-primary" />測試結果</strong><span className="text-[10px] text-muted-foreground">教學版結構判題</span></div>
+                  <div className="min-h-36 p-4">
+                    {resultMode === 'idle' ? <div className="grid min-h-28 place-items-center text-center"><div><TerminalSquare className="mx-auto size-6 text-muted-foreground/50" /><p className="mt-2 text-sm text-muted-foreground">按「執行測試」檢查兩個範例，或提交全部測試。</p></div></div> : <div><div className={`mb-3 flex items-center gap-2 font-bold ${results.every((result) => result.passed) ? 'text-emerald-600' : 'text-rose-600'}`}>{results.every((result) => result.passed) ? <CheckCircle2 className="size-5" /> : <XCircle className="size-5" />}{results.every((result) => result.passed) ? (resultMode === 'submit' ? '全部通過，提交成功！' : '範例測試通過') : '還有測試未通過'}</div><div className="grid gap-2 sm:grid-cols-3">{results.map((result) => <div key={result.label} className={`rounded-lg border p-3 text-xs ${result.passed ? 'border-emerald-200 bg-emerald-50 dark:border-emerald-900 dark:bg-emerald-950/30' : 'border-rose-200 bg-rose-50 dark:border-rose-900 dark:bg-rose-950/30'}`}><div className="flex items-center gap-1 font-bold">{result.passed ? <Check className="size-3.5 text-emerald-600" /> : <XCircle className="size-3.5 text-rose-600" />}{result.label}</div><p className="mt-1 truncate text-muted-foreground">輸入：{result.input}</p><p className="truncate text-muted-foreground">預期：{result.output}</p></div>)}</div></div>}
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-center justify-between gap-2 border-t bg-secondary/30 p-3"><Button variant="ghost" className="gap-2 text-muted-foreground" onClick={() => { setCode(selectedProblem.starter); setResults([]); setResultMode('idle'); }}><RotateCcw />重設</Button><div className="flex gap-2"><Button variant="outline" className="gap-2" onClick={() => evaluate('run')}><Play />執行測試</Button><Button className="gap-2 bg-emerald-600 hover:bg-emerald-700" onClick={() => evaluate('submit')}><Send />提交解答</Button></div></div>
+              </section>
+            </div>
+
+            {resultMode === 'submit' && results.every((result) => result.passed) && <section className="mt-3 rounded-xl border bg-card p-6 shadow-sm"><div className="flex items-start gap-3"><span className="grid size-10 shrink-0 place-items-center rounded-xl bg-emerald-100 text-emerald-700"><Trophy className="size-5" /></span><div><p className="text-xs font-black tracking-[.12em] text-emerald-600">SOLUTION REVIEW</p><h2 className="mt-1 text-xl font-black">解題重點</h2><p className="mt-3 max-w-4xl text-sm leading-7 text-muted-foreground">{selectedProblem.explanation}</p><details className="mt-4"><summary className="cursor-pointer text-sm font-bold text-primary">查看參考解答</summary><pre className="mt-3 overflow-x-auto rounded-xl bg-[#111827] p-5 font-mono text-xs leading-6 text-slate-100"><code>{selectedProblem.solution}</code></pre></details></div></div></section>}
+          </div>
+        )}
+
+        {view === 'learn' && (
+          <div className="mx-auto max-w-[1380px] p-4 md:p-7">
+            {selectedLesson ? <LessonArticle lesson={selectedLesson} onBack={() => setSelectedLesson(null)} onPractice={(id) => openProblem(problems.find((problem) => problem.id === id) || problems[0])} /> : <>
+              <PageTitle eyebrow="LEARNING PATHS" title="短篇教學，讀完立刻練" copy="內容採小章節設計，像 W3Schools 一樣容易查閱；每章都連到一題可動手驗證的練習。" />
+              <div className="mt-7 space-y-8">{(Object.keys(languageMeta) as Language[]).map((language) => { const meta = languageMeta[language]; const Icon = languageIcons[language]; return <section key={language}><div className="mb-3 flex items-center gap-3"><span className="grid size-10 place-items-center rounded-xl" style={{ background: meta.soft, color: meta.color }}><Icon className="size-5" /></span><div><h2 className="text-lg font-black">{language} 學習路徑</h2><p className="text-xs text-muted-foreground">{meta.description}</p></div></div><div className="grid gap-3 md:grid-cols-3">{lessons.filter((lesson) => lesson.language === language).map((lesson, index) => <button key={lesson.id} onClick={() => setSelectedLesson(lesson)} className="group rounded-2xl border bg-card p-5 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md"><div className="flex items-center justify-between"><span className="font-mono text-xs font-black text-primary">{String(index + 1).padStart(2, '0')}</span><span className="rounded-full bg-secondary px-2 py-1 text-[10px] font-bold text-muted-foreground">{lesson.level} · {lesson.minutes} 分鐘</span></div><h3 className="mt-5 text-lg font-black group-hover:text-primary">{lesson.title}</h3><p className="mt-2 min-h-12 text-sm leading-6 text-muted-foreground">{lesson.description}</p><span className="mt-5 flex items-center gap-1 text-xs font-bold text-primary">開始閱讀 <ChevronRight className="size-3" /></span></button>)}</div></section>; })}</div>
+            </>}
+          </div>
+        )}
+
+        {view === 'progress' && (
+          <div className="mx-auto max-w-[1180px] space-y-7 p-4 md:p-7">
+            <PageTitle eyebrow="LEARNING ANALYTICS" title="看見進步，也看見下一步" copy="以已解題目、提交結果和語言別進度整理你的本機學習紀錄。" />
+            <section className="grid grid-cols-2 gap-3 lg:grid-cols-4">{[
+              { label: '已解題', value: learning.solved.length, icon: CheckCircle2, color: 'text-emerald-600' },
+              { label: '總提交', value: learning.submissions, icon: Send, color: 'text-blue-600' },
+              { label: '正確率', value: `${accuracy}%`, icon: Trophy, color: 'text-amber-600' },
+              { label: '收藏', value: learning.favorites.length, icon: Star, color: 'text-violet-600' },
+            ].map(({ label, value, icon: Icon, color }) => <article key={label} className="rounded-2xl border bg-card p-5 shadow-sm"><Icon className={`size-5 ${color}`} /><span className="mt-5 block text-xs font-bold text-muted-foreground">{label}</span><strong className="mt-1 block font-mono text-3xl font-black">{value}</strong></article>)}</section>
+            <section className="grid gap-5 lg:grid-cols-[1fr_.8fr]">
+              <article className="rounded-2xl border bg-card p-5 shadow-sm md:p-6"><h2 className="font-black">各專項完成度</h2><div className="mt-6 space-y-5">{(Object.keys(languageMeta) as Language[]).map((language) => { const meta = languageMeta[language]; const total = problems.filter((problem) => problem.language === language).length; const solved = problems.filter((problem) => problem.language === language && learning.solved.includes(problem.id)).length; return <div key={language}><div className="mb-2 flex items-center justify-between text-sm"><strong>{language}</strong><span className="font-mono text-xs text-muted-foreground">{solved} / {total}</span></div><div className="h-2 overflow-hidden rounded-full bg-secondary"><div className="h-full rounded-full" style={{ width: `${solved / total * 100}%`, background: meta.color }} /></div></div>; })}</div></article>
+              <article className="rounded-2xl border bg-card shadow-sm"><div className="border-b p-5"><h2 className="font-black">最近提交</h2></div>{learning.history.length ? <div className="divide-y">{learning.history.slice(0, 7).map((item, index) => { const problem = problems.find((p) => p.id === item.id)!; return <button key={`${item.at}-${index}`} onClick={() => openProblem(problem)} className="flex w-full items-center gap-3 px-5 py-3 text-left hover:bg-secondary/50"><span className={`grid size-7 place-items-center rounded-full ${item.passed ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>{item.passed ? <Check className="size-4" /> : <XCircle className="size-4" />}</span><span className="min-w-0 flex-1"><strong className="block truncate text-sm">{problem.id}. {problem.title}</strong><span className="text-[10px] text-muted-foreground">{new Intl.DateTimeFormat('zh-TW', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(item.at))}</span></span><ChevronRight className="size-4 text-muted-foreground" /></button>; })}</div> : <div className="p-10 text-center text-sm text-muted-foreground">提交解答後，紀錄會出現在這裡。</div>}</article>
+            </section>
+          </div>
+        )}
+
+        {view === 'favorites' && (
+          <div className="mx-auto max-w-[1180px] space-y-6 p-4 md:p-7">
+            <PageTitle eyebrow="SAVED PROBLEMS" title="收藏題目" copy="把想重做或稍後研究的題目集中在這裡。" />
+            <div className="overflow-hidden rounded-2xl border bg-card shadow-sm">{learning.favorites.length ? <div className="divide-y">{problems.filter((problem) => learning.favorites.includes(problem.id)).map((problem) => <ProblemRow key={problem.id} problem={problem} learning={learning} onOpen={openProblem} detailed />)}</div> : <div className="p-16 text-center"><Star className="mx-auto size-9 text-muted-foreground/40" /><strong className="mt-4 block">還沒有收藏題目</strong><p className="mt-1 text-sm text-muted-foreground">在解題頁按星號，就能把題目收進這裡。</p><Button className="mt-5" onClick={() => changeView('problems')}>前往題庫</Button></div>}</div>
+          </div>
+        )}
+      </main>
+
+      <nav className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-5 border-t bg-card/95 px-1 pb-[env(safe-area-inset-bottom)] backdrop-blur-xl lg:hidden" aria-label="行動版導覽">
+        {navItems.map(({ view: itemView, label, icon: Icon }) => <button key={itemView} onClick={() => changeView(itemView)} className={`flex min-h-16 flex-col items-center justify-center gap-1 text-[10px] font-bold ${view === itemView || (view === 'workspace' && itemView === 'problems') ? 'text-primary' : 'text-muted-foreground'}`}><Icon className="size-5" />{label}</button>)}
+      </nav>
+    </div>
+  );
+}
+
+function ProblemRow({ problem, learning, onOpen, detailed = false }: { problem: Problem; learning: LearningState; onOpen: (problem: Problem) => void; detailed?: boolean }) {
+  const solved = learning.solved.includes(problem.id);
+  const wrong = learning.wrong.includes(problem.id);
+  const Icon = languageIcons[problem.language];
+  if (!detailed) {
+    return <button onClick={() => onOpen(problem)} className="flex w-full items-center gap-3 p-4 text-left transition hover:bg-secondary/50 md:px-5"><span className={`grid size-8 shrink-0 place-items-center rounded-lg ${solved ? 'bg-emerald-100 text-emerald-700' : wrong ? 'bg-rose-100 text-rose-700' : 'bg-secondary text-muted-foreground'}`}>{solved ? <Check className="size-4" /> : wrong ? <RotateCcw className="size-4" /> : <Circle className="size-3" />}</span><span className="min-w-0 flex-1"><strong className="block truncate text-sm">{problem.id}. {problem.title}</strong><span className="mt-1 block text-xs text-muted-foreground">{problem.language} · {problem.topic}</span></span><span className={`rounded-full px-2.5 py-1 text-[10px] font-bold ${difficultyClass[problem.difficulty]}`}>{problem.difficulty}</span><ChevronRight className="size-4 text-muted-foreground" /></button>;
+  }
+  return <button onClick={() => onOpen(problem)} className="grid w-full grid-cols-[42px_minmax(0,1fr)_auto] items-center gap-3 px-4 py-4 text-left transition hover:bg-secondary/50 md:grid-cols-[60px_minmax(280px,1fr)_120px_120px_110px] md:px-5"><span className="flex items-center gap-1">{solved ? <CheckCircle2 className="size-5 text-emerald-600" /> : wrong ? <RotateCcw className="size-5 text-rose-500" /> : <Circle className="size-4 text-muted-foreground/50" />}</span><span className="min-w-0"><strong className="block truncate text-sm">{problem.id}. {problem.title}</strong><span className="mt-1 block text-xs text-muted-foreground md:hidden">{problem.language} · {problem.topic}</span></span><ChevronRight className="size-4 text-muted-foreground md:hidden" /><span className="hidden items-center gap-2 text-xs md:flex"><Icon className="size-4 text-primary" />{problem.language}</span><span className="hidden md:block"><span className={`rounded-full px-2.5 py-1 text-[10px] font-bold ${difficultyClass[problem.difficulty]}`}>{problem.difficulty}</span></span><span className="hidden font-mono text-xs text-muted-foreground md:block">{problem.acceptance}%</span></button>;
+}
+
+function LessonArticle({ lesson, onBack, onPractice }: { lesson: Lesson; onBack: () => void; onPractice: (id: number) => void }) {
+  const meta = languageMeta[lesson.language];
+  const Icon = languageIcons[lesson.language];
+  return <div className="mx-auto max-w-5xl"><Button variant="ghost" className="mb-5 gap-2" onClick={onBack}><ArrowLeft />回到教學路徑</Button><article className="overflow-hidden rounded-2xl border bg-card shadow-sm"><header className="border-b p-6 md:p-9"><div className="flex items-center gap-3"><span className="grid size-11 place-items-center rounded-xl" style={{ background: meta.soft, color: meta.color }}><Icon className="size-5" /></span><div><p className="text-xs font-black tracking-[.12em] text-primary">{lesson.language} · {lesson.level}</p><p className="mt-1 flex items-center gap-1 text-xs text-muted-foreground"><Clock3 className="size-3" />約 {lesson.minutes} 分鐘</p></div></div><h1 className="mt-7 text-3xl font-black tracking-tight md:text-4xl">{lesson.title}</h1><p className="mt-3 text-base leading-7 text-muted-foreground">{lesson.description}</p></header><div className="grid gap-8 p-6 md:grid-cols-[minmax(0,1fr)_280px] md:p-9"><div className="space-y-5">{lesson.body.map((paragraph, index) => <section key={paragraph}><h2 className="mb-2 text-sm font-black text-primary">{String(index + 1).padStart(2, '0')}</h2><p className="leading-8 text-muted-foreground">{paragraph}</p></section>)}<pre className="overflow-x-auto rounded-xl bg-[#111827] p-5 font-mono text-sm leading-7 text-slate-100"><code>{lesson.code}</code></pre><div className="rounded-xl border-l-4 border-primary bg-primary/5 p-5"><strong className="flex items-center gap-2"><Lightbulb className="size-4 text-primary" />本章記住這件事</strong><p className="mt-2 text-sm leading-6 text-muted-foreground">{lesson.takeaway}</p></div></div><aside><div className="sticky top-24 rounded-xl border bg-secondary/50 p-5"><p className="text-xs font-black tracking-[.12em] text-primary">READY TO PRACTICE?</p><h2 className="mt-2 text-lg font-black">讀完就動手驗證</h2><p className="mt-2 text-sm leading-6 text-muted-foreground">開啟相關題目，使用提示與測試案例完成一次實作。</p><Button className="mt-5 w-full justify-between" onClick={() => onPractice(lesson.relatedProblem)}>開始相關練習 <ChevronRight /></Button></div></aside></div></article></div>;
+}

@@ -11,19 +11,24 @@ import {
   CheckCircle2,
   ChevronRight,
   Circle,
+  Cloud,
+  CloudOff,
   Clock3,
   Code2,
   Database,
+  Eye,
+  EyeOff,
   Flame,
   House,
   Lightbulb,
   ListChecks,
+  Loader2,
+  Map,
   Moon,
   Play,
   RotateCcw,
   Search,
   Send,
-  Sparkles,
   Star,
   Sun,
   TerminalSquare,
@@ -45,9 +50,21 @@ import {
   type Lesson,
   type Problem,
 } from './content';
+import { algorithmTracks } from './drills';
 
-type View = 'home' | 'problems' | 'workspace' | 'learn' | 'progress' | 'favorites';
-type RunResult = { label: string; input: string; output: string; passed: boolean };
+type View = 'home' | 'problems' | 'workspace' | 'learn' | 'algorithms' | 'progress' | 'favorites';
+type RunResult = {
+  label: string;
+  input: string;
+  output: string;
+  passed: boolean;
+  actual?: string;
+  error?: string;
+  status?: string;
+  time?: string | null;
+  memory?: number | null;
+};
+type SyncState = 'loading' | 'synced' | 'saving' | 'local' | 'error';
 type HistoryItem = { id: number; passed: boolean; at: string };
 type LearningState = {
   solved: number[];
@@ -78,6 +95,7 @@ const navItems: { view: View; label: string; icon: typeof House }[] = [
   { view: 'home', label: '學習總覽', icon: House },
   { view: 'problems', label: '題庫', icon: ListChecks },
   { view: 'learn', label: '教學路徑', icon: BookOpen },
+  { view: 'algorithms', label: '演算法路線', icon: Map },
   { view: 'progress', label: '學習分析', icon: ChartNoAxesColumnIncreasing },
   { view: 'favorites', label: '收藏題目', icon: Star },
 ];
@@ -96,6 +114,26 @@ function normalizeCode(value: string) {
 
 function nextUnique(list: number[], value: number) {
   return list.includes(value) ? list : [...list, value];
+}
+
+function mergeLearningState(local: LearningState, remote: LearningState): LearningState {
+  const mergeIds = (first: number[], second: number[]) => Array.from(new Set([...first, ...second]));
+  const history = [...local.history, ...remote.history]
+    .filter((item, index, items) => items.findIndex((candidate) => candidate.id === item.id && candidate.at === item.at && candidate.passed === item.passed) === index)
+    .sort((a, b) => b.at.localeCompare(a.at))
+    .slice(0, 20);
+  const today = dateKey();
+  return {
+    solved: mergeIds(local.solved, remote.solved),
+    attempted: mergeIds(local.attempted, remote.attempted),
+    wrong: mergeIds(local.wrong, remote.wrong).filter((id) => !local.solved.includes(id) && !remote.solved.includes(id)),
+    favorites: mergeIds(local.favorites, remote.favorites),
+    submissions: Math.max(local.submissions, remote.submissions),
+    successful: Math.max(local.successful, remote.successful),
+    history,
+    today,
+    todayCount: Math.max(local.today === today ? local.todayCount : 0, remote.today === today ? remote.todayCount : 0),
+  };
 }
 
 function PageTitle({ eyebrow, title, copy }: { eyebrow: string; title: string; copy: string }) {
@@ -118,28 +156,81 @@ export default function Home() {
   const [search, setSearch] = useState('');
   const [languageFilter, setLanguageFilter] = useState<'全部' | Language>('全部');
   const [difficultyFilter, setDifficultyFilter] = useState<'全部' | Difficulty>('全部');
+  const [trackFilter, setTrackFilter] = useState('全部');
+  const [problemPage, setProblemPage] = useState(1);
   const [learning, setLearning] = useState<LearningState>(emptyLearningState);
   const [hydrated, setHydrated] = useState(false);
   const [dark, setDark] = useState(false);
+  const [showSolution, setShowSolution] = useState(false);
+  const [judgeLoading, setJudgeLoading] = useState(false);
+  const [judgeError, setJudgeError] = useState('');
+  const [syncState, setSyncState] = useState<SyncState>('loading');
+  const [syncEmail, setSyncEmail] = useState('');
+  const [cloudReady, setCloudReady] = useState(false);
 
   useEffect(() => {
+    let active = true;
+    let localState = emptyLearningState;
     try {
       const saved = localStorage.getItem('codedive-learning-v1');
       const theme = localStorage.getItem('codedive-theme');
-      if (saved) setLearning({ ...emptyLearningState, ...JSON.parse(saved) });
+      if (saved) localState = { ...emptyLearningState, ...JSON.parse(saved) };
       if (theme === 'dark') {
-        setDark(true);
         document.documentElement.classList.add('dark');
       }
     } catch {
       // Corrupt local state falls back to an empty learning profile.
     }
-    setHydrated(true);
+    queueMicrotask(() => {
+      if (!active) return;
+      setLearning(localState);
+      setDark(localStorage.getItem('codedive-theme') === 'dark');
+      setHydrated(true);
+    });
+
+    fetch('/api/progress', { headers: { accept: 'application/json' } })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(String(response.status));
+        return response.json() as Promise<{ state: LearningState | null; user?: { email?: string | null } }>;
+      })
+      .then((payload) => {
+        if (!active) return;
+        const remote = payload.state ? { ...emptyLearningState, ...payload.state } : emptyLearningState;
+        setLearning(mergeLearningState(localState, remote));
+        setSyncEmail(payload.user?.email || '');
+        setCloudReady(true);
+        setSyncState('synced');
+      })
+      .catch(() => {
+        if (active) setSyncState('local');
+      });
+
+    return () => { active = false; };
   }, []);
 
   useEffect(() => {
-    if (hydrated) localStorage.setItem('codedive-learning-v1', JSON.stringify(learning));
-  }, [learning, hydrated]);
+    if (!hydrated) return;
+    localStorage.setItem('codedive-learning-v1', JSON.stringify(learning));
+    if (!cloudReady) return;
+    const timeout = window.setTimeout(() => {
+      setSyncState('saving');
+      fetch('/api/progress', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json', accept: 'application/json' },
+        body: JSON.stringify({ state: learning }),
+      })
+        .then(async (response) => {
+          if (!response.ok) throw new Error(String(response.status));
+          return response.json() as Promise<{ user?: { email?: string | null } }>;
+        })
+        .then((payload) => {
+          setSyncEmail((current) => payload.user?.email || current);
+          setSyncState('synced');
+        })
+        .catch(() => setSyncState('error'));
+    }, 650);
+    return () => window.clearTimeout(timeout);
+  }, [learning, hydrated, cloudReady]);
 
   const todayCount = learning.today === dateKey() ? learning.todayCount : 0;
   const accuracy = learning.submissions ? Math.round((learning.successful / learning.submissions) * 100) : 0;
@@ -153,15 +244,23 @@ export default function Home() {
       const matchesQuery = !query || `${problem.title} ${problem.topic} ${problem.language}`.toLowerCase().includes(query);
       const matchesLanguage = languageFilter === '全部' || problem.language === languageFilter;
       const matchesDifficulty = difficultyFilter === '全部' || problem.difficulty === difficultyFilter;
-      return matchesQuery && matchesLanguage && matchesDifficulty;
+      const track = algorithmTracks.find((item) => item.title === trackFilter);
+      const matchesTrack = trackFilter === '全部' || problem.track === trackFilter || Boolean(track?.topics.includes(problem.topic));
+      return matchesQuery && matchesLanguage && matchesDifficulty && matchesTrack;
     });
-  }, [search, languageFilter, difficultyFilter]);
+  }, [search, languageFilter, difficultyFilter, trackFilter]);
+
+  const pageSize = 25;
+  const problemPageCount = Math.max(1, Math.ceil(filteredProblems.length / pageSize));
+  const visibleProblems = filteredProblems.slice((problemPage - 1) * pageSize, problemPage * pageSize);
 
   const openProblem = (problem: Problem) => {
     setSelectedProblem(problem);
     setCode(problem.starter);
     setResults([]);
     setResultMode('idle');
+    setShowSolution(false);
+    setJudgeError('');
     setView('workspace');
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
@@ -188,7 +287,49 @@ export default function Home() {
     }));
   };
 
-  const evaluate = (mode: 'run' | 'submit') => {
+  const recordSubmission = (passed: boolean) => {
+    const id = selectedProblem.id;
+    setLearning((current) => {
+      const isToday = current.today === dateKey();
+      return {
+        ...current,
+        attempted: nextUnique(current.attempted, id),
+        solved: passed ? nextUnique(current.solved, id) : current.solved,
+        wrong: passed ? current.wrong.filter((item) => item !== id) : nextUnique(current.wrong, id),
+        submissions: current.submissions + 1,
+        successful: current.successful + (passed ? 1 : 0),
+        history: [{ id, passed, at: new Date().toISOString() }, ...current.history].slice(0, 20),
+        today: dateKey(),
+        todayCount: (isToday ? current.todayCount : 0) + (passed && !current.solved.includes(id) ? 1 : 0),
+      };
+    });
+  };
+
+  const evaluate = async (mode: 'run' | 'submit') => {
+    setJudgeError('');
+    setJudgeLoading(true);
+    const usesSandbox = selectedProblem.id <= 16;
+    if (usesSandbox) {
+      try {
+        const response = await fetch('/api/judge', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', accept: 'application/json' },
+          body: JSON.stringify({ problemId: selectedProblem.id, source: code, mode }),
+        });
+        const payload = await response.json() as { results?: RunResult[]; error?: string };
+        if (!response.ok || !payload.results) throw new Error(payload.error || '安全判題服務暫時無法使用。');
+        const passed = payload.results.every((item) => item.passed);
+        setResults(payload.results);
+        setResultMode(mode);
+        if (mode === 'submit') recordSubmission(passed);
+      } catch (error) {
+        setJudgeError(error instanceof Error ? error.message : '安全判題服務暫時無法使用。');
+      } finally {
+        setJudgeLoading(false);
+      }
+      return;
+    }
+
     const normalized = normalizeCode(code);
     const checks = mode === 'run' ? selectedProblem.checks.slice(0, 2) : selectedProblem.checks;
     const evaluated = checks.map((check) => ({
@@ -200,24 +341,8 @@ export default function Home() {
     const passed = evaluated.every((item) => item.passed);
     setResults(evaluated);
     setResultMode(mode);
-
-    if (mode === 'submit') {
-      const id = selectedProblem.id;
-      setLearning((current) => {
-        const isToday = current.today === dateKey();
-        return {
-          ...current,
-          attempted: nextUnique(current.attempted, id),
-          solved: passed ? nextUnique(current.solved, id) : current.solved,
-          wrong: passed ? current.wrong.filter((item) => item !== id) : nextUnique(current.wrong, id),
-          submissions: current.submissions + 1,
-          successful: current.successful + (passed ? 1 : 0),
-          history: [{ id, passed, at: new Date().toISOString() }, ...current.history].slice(0, 20),
-          today: dateKey(),
-          todayCount: (isToday ? current.todayCount : 0) + (passed && !current.solved.includes(id) ? 1 : 0),
-        };
-      });
-    }
+    if (mode === 'submit') recordSubmission(passed);
+    setJudgeLoading(false);
   };
 
   const changeView = (next: View) => {
@@ -249,8 +374,11 @@ export default function Home() {
           <Progress value={Math.min(todayCount * 10, 100)} className="[&_[data-slot=progress-track]]:h-1.5" />
         </div>
         <div className="mt-auto rounded-xl border bg-primary/5 p-4 text-xs leading-5 text-muted-foreground">
-          <strong className="mb-1 flex items-center gap-2 text-foreground"><Sparkles className="size-4 text-primary" />本機學習紀錄</strong>
-          答題、錯題與收藏會自動留在這台裝置，不需登入。
+          <strong className="mb-1 flex items-center gap-2 text-foreground">
+            {syncState === 'saving' || syncState === 'loading' ? <Loader2 className="size-4 animate-spin text-primary" /> : syncState === 'synced' ? <Cloud className="size-4 text-emerald-600" /> : <CloudOff className="size-4 text-amber-600" />}
+            {syncState === 'synced' ? '跨裝置雲端同步' : syncState === 'saving' ? '正在同步進度' : '本機學習紀錄'}
+          </strong>
+          {syncState === 'synced' ? (syncEmail || '進度已安全儲存至帳號') : syncState === 'error' ? '雲端暫時無法連線，進度仍保留在本機。' : '答題、錯題與收藏會先自動留在這台裝置。'}
         </div>
       </aside>
 
@@ -266,6 +394,10 @@ export default function Home() {
               <strong className="block truncate text-lg">{view === 'workspace' ? `${selectedProblem.id}. ${selectedProblem.title}` : navItems.find((item) => item.view === view)?.label || '程式題海'}</strong>
             </div>
             <div className="ml-auto flex items-center gap-2">
+              <span className="hidden items-center gap-1.5 text-xs text-muted-foreground md:flex">
+                {syncState === 'synced' ? <Cloud className="size-4 text-emerald-600" /> : syncState === 'saving' || syncState === 'loading' ? <Loader2 className="size-4 animate-spin" /> : <CloudOff className="size-4 text-amber-600" />}
+                {syncState === 'synced' ? '已同步' : syncState === 'saving' ? '同步中' : '本機模式'}
+              </span>
               <Button variant="outline" className="hidden h-9 gap-2 sm:flex" onClick={quickStart}><Play className="size-4" />隨機一題</Button>
               <Button aria-label="切換深色模式" variant="outline" size="icon-lg" onClick={toggleTheme}>{dark ? <Sun /> : <Moon />}</Button>
             </div>
@@ -281,7 +413,7 @@ export default function Home() {
                   <Badge className="mb-4 bg-primary/10 text-primary"><Flame className="mr-1 size-3" />今日學習工作台</Badge>
                   <h1 className="max-w-3xl text-3xl font-black leading-[1.13] tracking-[-.04em] md:text-5xl">學懂觀念，寫出程式，<br className="hidden sm:block" />用題目驗證自己。</h1>
                   <p className="mt-4 max-w-2xl text-sm leading-7 text-muted-foreground md:text-base">以 LeetCode 式解題流程為核心，串起 C、C++、Python、SQL 與 GDB 的繁體中文教學。每題都有提示、範例、結構檢查與詳解。</p>
-                  <div className="mt-6 flex flex-wrap gap-2"><Button className="h-11 gap-2 px-5" onClick={() => changeView('problems')}><ListChecks />開始選題</Button><Button className="h-11 gap-2 px-5" variant="outline" onClick={() => changeView('learn')}><BookOpen />先看教學</Button></div>
+                  <div className="mt-6 flex flex-wrap gap-2"><Button className="h-11 gap-2 px-5" onClick={() => changeView('problems')}><ListChecks />開始選題</Button><Button className="h-11 gap-2 px-5" variant="outline" onClick={() => changeView('algorithms')}><Map />演算法路線</Button><Button className="h-11 gap-2 px-5" variant="outline" onClick={() => changeView('learn')}><BookOpen />先看教學</Button></div>
                 </div>
                 <div className="rounded-2xl border bg-secondary/60 p-5">
                   <div className="flex items-center justify-between"><div><p className="text-xs font-bold text-muted-foreground">TODAY</p><strong className="mt-1 block text-lg">每日 10 題</strong></div><span className="font-mono text-2xl font-black text-primary">{Math.min(todayCount, 10)}<small className="text-sm text-muted-foreground"> / 10</small></span></div>
@@ -308,7 +440,7 @@ export default function Home() {
                   const Icon = languageIcons[language];
                   const total = problems.filter((problem) => problem.language === language).length;
                   const solved = problems.filter((problem) => problem.language === language && learning.solved.includes(problem.id)).length;
-                  return <button key={language} onClick={() => { setLanguageFilter(language); changeView('problems'); }} className="group rounded-2xl border bg-card p-4 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md md:p-5"><span className="mb-5 grid size-11 place-items-center rounded-xl" style={{ background: meta.soft, color: meta.color }}><Icon className="size-5" /></span><div className="flex items-center justify-between"><strong className="text-lg">{language}</strong><span className="font-mono text-[10px] text-muted-foreground">{solved}/{total}</span></div><p className="mt-1 min-h-10 text-xs leading-5 text-muted-foreground">{meta.description}</p><div className="mt-4 h-1.5 overflow-hidden rounded-full bg-secondary"><div className="h-full rounded-full transition-all" style={{ width: `${total ? solved / total * 100 : 0}%`, background: meta.color }} /></div></button>;
+                  return <button key={language} onClick={() => { setLanguageFilter(language); setProblemPage(1); changeView('problems'); }} className="group rounded-2xl border bg-card p-4 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md md:p-5"><span className="mb-5 grid size-11 place-items-center rounded-xl" style={{ background: meta.soft, color: meta.color }}><Icon className="size-5" /></span><div className="flex items-center justify-between"><strong className="text-lg">{language}</strong><span className="font-mono text-[10px] text-muted-foreground">{solved}/{total}</span></div><p className="mt-1 min-h-10 text-xs leading-5 text-muted-foreground">{meta.description}</p><div className="mt-4 h-1.5 overflow-hidden rounded-full bg-secondary"><div className="h-full rounded-full transition-all" style={{ width: `${total ? solved / total * 100 : 0}%`, background: meta.color }} /></div></button>;
                 })}
               </div>
             </section>
@@ -331,15 +463,17 @@ export default function Home() {
 
         {view === 'problems' && (
           <div className="mx-auto max-w-[1380px] space-y-6 p-4 md:p-7">
-            <PageTitle eyebrow="PROBLEM SET" title="選一題，開始解題" copy="依語言、難度或主題搜尋。完成狀態、錯題與收藏會保留在本機。" />
+            <PageTitle eyebrow="PROBLEM SET" title="選一題，開始解題" copy="200 題依語言、難度與演算法路線整理；每題都能直接顯示解答。" />
+            {trackFilter !== '全部' && <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-primary/20 bg-primary/5 px-4 py-3"><div><span className="text-xs font-black text-primary">目前路線</span><strong className="ml-2 text-sm">{trackFilter}</strong></div><Button variant="ghost" size="sm" onClick={() => { setTrackFilter('全部'); setProblemPage(1); }}>清除路線篩選</Button></div>}
             <div className="grid gap-3 rounded-2xl border bg-card p-4 shadow-sm md:grid-cols-[minmax(0,1fr)_auto_auto]">
-              <div className="relative"><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" /><Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜尋題目或主題…" className="h-10 pl-9" aria-label="搜尋題目" /></div>
-              <select value={languageFilter} onChange={(event) => setLanguageFilter(event.target.value as '全部' | Language)} className="h-10 rounded-lg border bg-background px-3 text-sm" aria-label="語言篩選"><option>全部</option>{Object.keys(languageMeta).map((language) => <option key={language}>{language}</option>)}</select>
-              <select value={difficultyFilter} onChange={(event) => setDifficultyFilter(event.target.value as '全部' | Difficulty)} className="h-10 rounded-lg border bg-background px-3 text-sm" aria-label="難度篩選"><option>全部</option><option>簡單</option><option>中等</option><option>困難</option></select>
+              <div className="relative"><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" /><Input value={search} onChange={(event) => { setSearch(event.target.value); setProblemPage(1); }} placeholder="搜尋題目或主題…" className="h-10 pl-9" aria-label="搜尋題目" /></div>
+              <select value={languageFilter} onChange={(event) => { setLanguageFilter(event.target.value as '全部' | Language); setProblemPage(1); }} className="h-10 rounded-lg border bg-background px-3 text-sm" aria-label="語言篩選"><option>全部</option>{Object.keys(languageMeta).map((language) => <option key={language}>{language}</option>)}</select>
+              <select value={difficultyFilter} onChange={(event) => { setDifficultyFilter(event.target.value as '全部' | Difficulty); setProblemPage(1); }} className="h-10 rounded-lg border bg-background px-3 text-sm" aria-label="難度篩選"><option>全部</option><option>簡單</option><option>中等</option><option>困難</option></select>
             </div>
             <div className="overflow-hidden rounded-2xl border bg-card shadow-sm">
               <div className="hidden grid-cols-[60px_minmax(280px,1fr)_120px_120px_110px] gap-3 border-b bg-secondary/50 px-5 py-3 text-xs font-bold text-muted-foreground md:grid"><span>狀態</span><span>題目</span><span>專項</span><span>難度</span><span>通過率</span></div>
-              <div className="divide-y">{filteredProblems.length ? filteredProblems.map((problem) => <ProblemRow key={problem.id} problem={problem} learning={learning} onOpen={openProblem} detailed />) : <div className="p-12 text-center"><Search className="mx-auto size-8 text-muted-foreground/50" /><strong className="mt-3 block">找不到符合的題目</strong><p className="mt-1 text-sm text-muted-foreground">請調整搜尋文字或篩選條件。</p></div>}</div>
+              <div className="divide-y">{filteredProblems.length ? visibleProblems.map((problem) => <ProblemRow key={problem.id} problem={problem} learning={learning} onOpen={openProblem} detailed />) : <div className="p-12 text-center"><Search className="mx-auto size-8 text-muted-foreground/50" /><strong className="mt-3 block">找不到符合的題目</strong><p className="mt-1 text-sm text-muted-foreground">請調整搜尋文字或篩選條件。</p></div>}</div>
+              {filteredProblems.length > 0 && <div className="flex flex-wrap items-center justify-between gap-3 border-t bg-secondary/20 px-4 py-3"><span className="text-xs text-muted-foreground">共 {filteredProblems.length} 題 · 第 {problemPage} / {problemPageCount} 頁</span><div className="flex gap-2"><Button variant="outline" size="sm" disabled={problemPage === 1} onClick={() => setProblemPage((page) => Math.max(1, page - 1))}>上一頁</Button><Button variant="outline" size="sm" disabled={problemPage === problemPageCount} onClick={() => setProblemPage((page) => Math.min(problemPageCount, page + 1))}>下一頁</Button></div></div>}
             </div>
           </div>
         )}
@@ -368,16 +502,17 @@ export default function Home() {
                   <Textarea value={code} onChange={(event) => { setCode(event.target.value); setResultMode('idle'); setResults([]); }} spellCheck={false} aria-label="程式碼編輯器" className="h-full min-h-[390px] resize-none rounded-none border-0 bg-transparent py-4 pl-14 pr-4 font-mono text-[13px] leading-6 text-slate-100 caret-blue-400 focus-visible:ring-0" />
                 </div>
                 <div className="border-t">
-                  <div className="flex items-center justify-between border-b px-4 py-3"><strong className="flex items-center gap-2 text-sm"><TestTube2 className="size-4 text-primary" />測試結果</strong><span className="text-[10px] text-muted-foreground">教學版結構判題</span></div>
+                  <div className="flex items-center justify-between border-b px-4 py-3"><strong className="flex items-center gap-2 text-sm"><TestTube2 className="size-4 text-primary" />測試結果</strong><span className="text-[10px] text-muted-foreground">{selectedProblem.id <= 16 ? 'Judge0 安全沙箱' : '引導式結構判題'}</span></div>
                   <div className="min-h-36 p-4">
-                    {resultMode === 'idle' ? <div className="grid min-h-28 place-items-center text-center"><div><TerminalSquare className="mx-auto size-6 text-muted-foreground/50" /><p className="mt-2 text-sm text-muted-foreground">按「執行測試」檢查兩個範例，或提交全部測試。</p></div></div> : <div><div className={`mb-3 flex items-center gap-2 font-bold ${results.every((result) => result.passed) ? 'text-emerald-600' : 'text-rose-600'}`}>{results.every((result) => result.passed) ? <CheckCircle2 className="size-5" /> : <XCircle className="size-5" />}{results.every((result) => result.passed) ? (resultMode === 'submit' ? '全部通過，提交成功！' : '範例測試通過') : '還有測試未通過'}</div><div className="grid gap-2 sm:grid-cols-3">{results.map((result) => <div key={result.label} className={`rounded-lg border p-3 text-xs ${result.passed ? 'border-emerald-200 bg-emerald-50 dark:border-emerald-900 dark:bg-emerald-950/30' : 'border-rose-200 bg-rose-50 dark:border-rose-900 dark:bg-rose-950/30'}`}><div className="flex items-center gap-1 font-bold">{result.passed ? <Check className="size-3.5 text-emerald-600" /> : <XCircle className="size-3.5 text-rose-600" />}{result.label}</div><p className="mt-1 truncate text-muted-foreground">輸入：{result.input}</p><p className="truncate text-muted-foreground">預期：{result.output}</p></div>)}</div></div>}
+                    {judgeLoading ? <div className="grid min-h-28 place-items-center text-center"><div><Loader2 className="mx-auto size-6 animate-spin text-primary" /><p className="mt-2 text-sm text-muted-foreground">正在安全沙箱編譯並執行測試…</p></div></div> : judgeError ? <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700 dark:border-rose-900 dark:bg-rose-950/30 dark:text-rose-300"><strong className="flex items-center gap-2"><XCircle className="size-4" />判題未完成</strong><p className="mt-2">{judgeError}</p></div> : resultMode === 'idle' ? <div className="grid min-h-28 place-items-center text-center"><div><TerminalSquare className="mx-auto size-6 text-muted-foreground/50" /><p className="mt-2 text-sm text-muted-foreground">按「執行測試」檢查兩個範例，或提交全部測試。</p></div></div> : <div><div className={`mb-3 flex items-center gap-2 font-bold ${results.every((result) => result.passed) ? 'text-emerald-600' : 'text-rose-600'}`}>{results.every((result) => result.passed) ? <CheckCircle2 className="size-5" /> : <XCircle className="size-5" />}{results.every((result) => result.passed) ? (resultMode === 'submit' ? '全部通過，提交成功！' : '範例測試通過') : '還有測試未通過'}</div><div className="grid gap-2 sm:grid-cols-3">{results.map((result) => <div key={result.label} className={`rounded-lg border p-3 text-xs ${result.passed ? 'border-emerald-200 bg-emerald-50 dark:border-emerald-900 dark:bg-emerald-950/30' : 'border-rose-200 bg-rose-50 dark:border-rose-900 dark:bg-rose-950/30'}`}><div className="flex items-center gap-1 font-bold">{result.passed ? <Check className="size-3.5 text-emerald-600" /> : <XCircle className="size-3.5 text-rose-600" />}{result.label}</div><p className="mt-1 truncate text-muted-foreground">輸入：{result.input}</p><p className="truncate text-muted-foreground">預期：{result.output}</p>{result.actual !== undefined && <p className="truncate text-muted-foreground">實際：{result.actual || '（無輸出）'}</p>}{result.error && <p className="mt-2 line-clamp-3 text-rose-600">{result.error}</p>}</div>)}</div></div>}
                   </div>
                 </div>
-                <div className="flex flex-wrap items-center justify-between gap-2 border-t bg-secondary/30 p-3"><Button variant="ghost" className="gap-2 text-muted-foreground" onClick={() => { setCode(selectedProblem.starter); setResults([]); setResultMode('idle'); }}><RotateCcw />重設</Button><div className="flex gap-2"><Button variant="outline" className="gap-2" onClick={() => evaluate('run')}><Play />執行測試</Button><Button className="gap-2 bg-emerald-600 hover:bg-emerald-700" onClick={() => evaluate('submit')}><Send />提交解答</Button></div></div>
+                <div className="flex flex-wrap items-center justify-between gap-2 border-t bg-secondary/30 p-3"><div className="flex flex-wrap gap-2"><Button variant="ghost" className="gap-2 text-muted-foreground" onClick={() => { setCode(selectedProblem.starter); setResults([]); setResultMode('idle'); setJudgeError(''); }}><RotateCcw />重設</Button><Button variant="outline" className="gap-2" onClick={() => setShowSolution((visible) => !visible)}>{showSolution ? <EyeOff /> : <Eye />}{showSolution ? '隱藏解答' : '顯示解答'}</Button></div><div className="flex gap-2"><Button variant="outline" className="gap-2" disabled={judgeLoading} onClick={() => void evaluate('run')}>{judgeLoading ? <Loader2 className="animate-spin" /> : <Play />}執行測試</Button><Button className="gap-2 bg-emerald-600 hover:bg-emerald-700" disabled={judgeLoading} onClick={() => void evaluate('submit')}>{judgeLoading ? <Loader2 className="animate-spin" /> : <Send />}提交解答</Button></div></div>
               </section>
             </div>
 
-            {resultMode === 'submit' && results.every((result) => result.passed) && <section className="mt-3 rounded-xl border bg-card p-6 shadow-sm"><div className="flex items-start gap-3"><span className="grid size-10 shrink-0 place-items-center rounded-xl bg-emerald-100 text-emerald-700"><Trophy className="size-5" /></span><div><p className="text-xs font-black tracking-[.12em] text-emerald-600">SOLUTION REVIEW</p><h2 className="mt-1 text-xl font-black">解題重點</h2><p className="mt-3 max-w-4xl text-sm leading-7 text-muted-foreground">{selectedProblem.explanation}</p><details className="mt-4"><summary className="cursor-pointer text-sm font-bold text-primary">查看參考解答</summary><pre className="mt-3 overflow-x-auto rounded-xl bg-[#111827] p-5 font-mono text-xs leading-6 text-slate-100"><code>{selectedProblem.solution}</code></pre></details></div></div></section>}
+            {showSolution && <section className="mt-3 rounded-xl border border-primary/20 bg-card p-6 shadow-sm" aria-live="polite"><div className="flex items-start gap-3"><span className="grid size-10 shrink-0 place-items-center rounded-xl bg-primary/10 text-primary"><Eye className="size-5" /></span><div className="min-w-0 flex-1"><p className="text-xs font-black tracking-[.12em] text-primary">REFERENCE SOLUTION</p><h2 className="mt-1 text-xl font-black">參考解答與思路</h2><p className="mt-3 max-w-4xl text-sm leading-7 text-muted-foreground">{selectedProblem.explanation}</p><pre className="mt-4 overflow-x-auto rounded-xl bg-[#111827] p-5 font-mono text-xs leading-6 text-slate-100"><code>{selectedProblem.solution}</code></pre></div></div></section>}
+            {resultMode === 'submit' && results.every((result) => result.passed) && <section className="mt-3 rounded-xl border bg-emerald-50 p-5 text-emerald-800 shadow-sm dark:bg-emerald-950/30 dark:text-emerald-200"><div className="flex items-center gap-3"><Trophy className="size-5" /><div><strong>提交成功，這題已記入學習進度。</strong><p className="mt-1 text-xs opacity-80">可以前往下一題，或用上方按鈕比較參考解答。</p></div></div></section>}
           </div>
         )}
 
@@ -390,9 +525,24 @@ export default function Home() {
           </div>
         )}
 
+        {view === 'algorithms' && (
+          <div className="mx-auto max-w-[1380px] space-y-7 p-4 md:p-7">
+            <PageTitle eyebrow="ALGORITHM ROADMAP" title="從基礎資料結構，一路練到實戰" copy="依主題安排練習順序。先讀懂觀念，再進入對應題組反覆演練。" />
+            <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+              {algorithmTracks.map((track, index) => {
+                const trackProblems = problems.filter((problem) => problem.track === track.title || track.topics.includes(problem.topic));
+                const solved = trackProblems.filter((problem) => learning.solved.includes(problem.id)).length;
+                const percent = trackProblems.length ? Math.round((solved / trackProblems.length) * 100) : 0;
+                return <button key={track.id} onClick={() => { setTrackFilter(track.title); setSearch(''); setLanguageFilter('全部'); setDifficultyFilter('全部'); setProblemPage(1); changeView('problems'); }} className="group rounded-2xl border bg-card p-5 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md md:p-6"><div className="flex items-start justify-between"><span className="grid size-11 place-items-center rounded-xl font-mono text-sm font-black text-white" style={{ background: track.color }}>{String(index + 1).padStart(2, '0')}</span><Badge variant="outline">{trackProblems.length} 題</Badge></div><h2 className="mt-5 text-xl font-black group-hover:text-primary">{track.title}</h2><p className="mt-2 min-h-12 text-sm leading-6 text-muted-foreground">{track.description}</p><div className="mt-5 flex items-center justify-between text-xs"><span className="text-muted-foreground">完成 {solved} / {trackProblems.length}</span><strong style={{ color: track.color }}>{percent}%</strong></div><div className="mt-2 h-1.5 overflow-hidden rounded-full bg-secondary"><div className="h-full rounded-full transition-all" style={{ width: `${percent}%`, background: track.color }} /></div><span className="mt-5 flex items-center gap-1 text-xs font-bold text-primary">開啟題組 <ChevronRight className="size-3" /></span></button>;
+              })}
+            </section>
+            <section className="rounded-2xl border bg-card p-5 shadow-sm md:p-6"><div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center"><div><h2 className="font-black">建議順序</h2><p className="mt-1 text-sm leading-6 text-muted-foreground">陣列與字串 → 排序與搜尋 → 雜湊與集合 → 雙指標 → 資料結構 → 樹與圖論 → 動態規劃；SQL、系統與除錯可平行進行。</p></div><Button className="shrink-0 gap-2" onClick={() => { setTrackFilter('陣列與字串'); setProblemPage(1); changeView('problems'); }}><Play />從第一站開始</Button></div></section>
+          </div>
+        )}
+
         {view === 'progress' && (
           <div className="mx-auto max-w-[1180px] space-y-7 p-4 md:p-7">
-            <PageTitle eyebrow="LEARNING ANALYTICS" title="看見進步，也看見下一步" copy="以已解題目、提交結果和語言別進度整理你的本機學習紀錄。" />
+            <PageTitle eyebrow="LEARNING ANALYTICS" title="看見進步，也看見下一步" copy="已解題目、提交結果與收藏會保存於本機，登入狀態下也會同步到其他裝置。" />
             <section className="grid grid-cols-2 gap-3 lg:grid-cols-4">{[
               { label: '已解題', value: learning.solved.length, icon: CheckCircle2, color: 'text-emerald-600' },
               { label: '總提交', value: learning.submissions, icon: Send, color: 'text-blue-600' },
@@ -414,7 +564,7 @@ export default function Home() {
         )}
       </main>
 
-      <nav className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-5 border-t bg-card/95 px-1 pb-[env(safe-area-inset-bottom)] backdrop-blur-xl lg:hidden" aria-label="行動版導覽">
+      <nav className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-6 border-t bg-card/95 px-1 pb-[env(safe-area-inset-bottom)] backdrop-blur-xl lg:hidden" aria-label="行動版導覽">
         {navItems.map(({ view: itemView, label, icon: Icon }) => <button key={itemView} onClick={() => changeView(itemView)} className={`flex min-h-16 flex-col items-center justify-center gap-1 text-[10px] font-bold ${view === itemView || (view === 'workspace' && itemView === 'problems') ? 'text-primary' : 'text-muted-foreground'}`}><Icon className="size-5" />{label}</button>)}
       </nav>
     </div>

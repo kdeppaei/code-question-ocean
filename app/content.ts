@@ -1,3 +1,5 @@
+import { generatedProblems } from './drills';
+
 export type Language = 'C' | 'C++' | 'Python' | 'SQL' | 'GDB';
 export type Difficulty = '簡單' | '中等' | '困難';
 
@@ -15,6 +17,7 @@ export type Problem = {
   language: Language;
   difficulty: Difficulty;
   topic: string;
+  track?: string;
   acceptance: number;
   description: string;
   task: string;
@@ -48,7 +51,7 @@ export const languageMeta: Record<Language, { short: string; description: string
   GDB: { short: 'GDB', description: '中斷點、堆疊與除錯流程', color: '#e11d48', soft: '#fff1f2' },
 };
 
-export const problems: Problem[] = [
+const coreProblems: Problem[] = [
   {
     id: 1, slug: 'c-array-sum', title: '陣列總和', language: 'C', difficulty: '簡單', topic: '陣列', acceptance: 82,
     description: '給定一個整數陣列與長度 n，回傳所有元素的總和。請使用迴圈完成，不可假設陣列長度固定。',
@@ -486,6 +489,8 @@ run`,
     ],
   },
 ];
+
+export const problems: Problem[] = [...coreProblems, ...generatedProblems];
 
 export const lessons: Lesson[] = [
   { id: 'c-memory', language: 'C', title: '記憶體與指標', description: '從位址、解參照到安全交換兩個值。', minutes: 8, level: '核心', body: ['每個變數都存放在記憶體中的某個位置，而指標保存的是該位置的位址。& 取得位址，* 則從位址讀取或寫入值。', '指標的型別描述它指向的資料。int *p 表示 p 指向 int；在不知道生命週期或有效範圍時，不應任意解參照。', '函式若要修改呼叫端的變數，可以接收指標。這也是 C 語言中常見的「輸出參數」設計。'], code: String.raw`int score = 90;

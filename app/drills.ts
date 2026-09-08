@@ -500,7 +500,20 @@ const variants: { name: string; focus: string; difficulty: Difficulty; acceptanc
   { name: '綜合版', focus: '整合核心技巧、邊界處理與可讀性完成最終挑戰。', difficulty: '困難', acceptance: 42 },
 ];
 
-export const generatedProblems: Problem[] = blueprints.flatMap((blueprint, blueprintIndex) =>
+const expansionVariants: { name: string; focus: string; requirement: string; difficulty: Difficulty; acceptance: number }[] = [
+  { name: '資料驗證版', focus: '先辨認輸入前提，再讓核心流程在合法資料上穩定運作。', requirement: '請在解法旁註明依賴的輸入前提。', difficulty: '簡單', acceptance: 76 },
+  { name: '測試驅動版', focus: '從最小案例、典型案例與反例推導實作。', requirement: '完成前請自行列出至少三種測試情境。', difficulty: '簡單', acceptance: 73 },
+  { name: '極限輸入版', focus: '處理最小值、最大值與空集合附近的邊界。', requirement: '不得以固定大小或特定範例作為假設。', difficulty: '中等', acceptance: 66 },
+  { name: '記憶體版', focus: '在維持正確性的同時控制配置、複製與暫存資料。', requirement: '說明額外空間複雜度與資料生命週期。', difficulty: '中等', acceptance: 62 },
+  { name: '可讀性版', focus: '以清楚命名和單一職責整理相同演算法。', requirement: '禁止以難以理解的單行技巧取代核心步驟。', difficulty: '中等', acceptance: 60 },
+  { name: '常見陷阱版', focus: '主動避開索引越界、空值、重複資料或 NULL 語意錯誤。', requirement: '在解答說明中指出最可能發生的錯誤。', difficulty: '中等', acceptance: 56 },
+  { name: '面試版', focus: '先說明策略與複雜度，再完成可直接討論的實作。', requirement: '解法必須能以兩分鐘清楚說明。', difficulty: '困難', acceptance: 50 },
+  { name: '生產版', focus: '把輸入契約、錯誤邊界與維護性一起納入設計。', requirement: '避免隱含狀態，並保留可測試的函式介面。', difficulty: '困難', acceptance: 47 },
+  { name: '壓力測試版', focus: '在大規模資料與最壞排列下維持要求的複雜度。', requirement: '輸入規模可達 1,000,000，禁止不必要的巢狀掃描。', difficulty: '困難', acceptance: 43 },
+  { name: '大師版', focus: '同時滿足正確性、效能、邊界與可讀性。', requirement: '提交前逐項檢查時間、空間與所有邊界條件。', difficulty: '困難', acceptance: 38 },
+];
+
+const originalGeneratedProblems: Problem[] = blueprints.flatMap((blueprint, blueprintIndex) =>
   variants.map((variant, variantIndex) => {
     const id = 21 + blueprintIndex * variants.length + variantIndex;
     return {
@@ -532,3 +545,38 @@ export const generatedProblems: Problem[] = blueprints.flatMap((blueprint, bluep
     } satisfies Problem;
   }),
 );
+
+const expandedGeneratedProblems: Problem[] = blueprints.flatMap((blueprint, blueprintIndex) =>
+  expansionVariants.map((variant, variantIndex) => {
+    const id = 201 + blueprintIndex * expansionVariants.length + variantIndex;
+    return {
+      id,
+      slug: `challenge-${id}`,
+      title: `${blueprint.title}・${variant.name}`,
+      language: blueprint.language,
+      difficulty: variant.difficulty,
+      topic: blueprint.topic,
+      track: blueprint.track,
+      acceptance: Math.max(27, variant.acceptance - (blueprintIndex % 6)),
+      description: `${blueprint.description}${variant.focus}`,
+      task: `${blueprint.task} ${variant.requirement}`,
+      constraints: [
+        variant.requirement,
+        variantIndex >= 6 ? '必須先分析複雜度，再選擇資料結構或查詢策略' : '至少驗證一個一般案例與一個邊界案例',
+        '答案須符合指定介面，且不得依賴未說明的全域狀態',
+      ],
+      examples: [blueprint.example],
+      starter: blueprint.starter,
+      solution: blueprint.solution,
+      explanation: `${blueprint.explanation} 本題訓練：${variant.focus}`,
+      hints: ['先寫下輸入、輸出與邊界，再開始實作。', blueprint.explanation],
+      checks: [
+        { label: '核心案例', input: blueprint.example.input, output: blueprint.example.output, tokens: blueprint.tokens.slice(0, 1) },
+        { label: variant.name, input: variant.focus, output: '通過', tokens: blueprint.tokens.slice(0, 2) },
+        { label: '完整與邊界案例', input: '隱藏案例', output: '通過', tokens: blueprint.tokens },
+      ],
+    } satisfies Problem;
+  }),
+);
+
+export const generatedProblems: Problem[] = [...originalGeneratedProblems, ...expandedGeneratedProblems];

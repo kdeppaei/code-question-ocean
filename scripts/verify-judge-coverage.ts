@@ -5,13 +5,15 @@ function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
 }
 
-assert(problems.length === 200, `Expected 200 problems, received ${problems.length}`);
+assert(problems.length === 500, `Expected 500 problems, received ${problems.length}`);
 assert(new Set(problems.map((problem) => problem.id)).size === problems.length, 'Problem IDs must be unique');
+assert(new Set(problems.map((problem) => problem.slug)).size === problems.length, 'Problem slugs must be unique');
+assert(new Set(problems.map((problem) => problem.title)).size === problems.length, 'Problem titles must be unique');
 
 const languages: Language[] = ['C', 'C++', 'Python', 'SQL', 'GDB'];
 for (const language of languages) {
   const count = problems.filter((problem) => problem.language === language).length;
-  assert(count === 40, `${language} must have 40 problems, received ${count}`);
+  assert(count === 100, `${language} must have 100 problems, received ${count}`);
 }
 
 for (const problem of problems) {
@@ -23,7 +25,7 @@ const executableProblems = problems.filter((problem) => problem.language !== 'GD
 const judgedIds = new Set([...Array.from({ length: 16 }, (_, index) => index + 1), ...generatedJudgeProblemIds]);
 const missingJudge = executableProblems.filter((problem) => !judgedIds.has(problem.id));
 assert(missingJudge.length === 0, `Executable problems without a sandbox judge: ${missingJudge.map((problem) => problem.id).join(', ')}`);
-assert(generatedJudgeProblemIds.length === 144, `Expected 144 generated judge definitions, received ${generatedJudgeProblemIds.length}`);
+assert(generatedJudgeProblemIds.length === 384, `Expected 384 generated judge definitions, received ${generatedJudgeProblemIds.length}`);
 
 for (const [id, definition] of Object.entries(generatedJudgeDefinitions)) {
   assert(definition.cases.length > 0, `Judge definition ${id} has no hidden cases`);

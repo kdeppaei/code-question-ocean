@@ -97,19 +97,27 @@ const sampleImport = JSON.stringify({
     topic: '陣列',
     track: '陣列與字串',
     acceptance: 80,
-    description: '回傳整數串列的總和。',
-    task: '完成 custom_sum 函式。',
+    description: '讀取一行整數並輸出總和。',
+    task: '完成可直接執行的標準輸入／輸出程式。',
     constraints: ['串列長度不超過 1000'],
-    examples: [{ input: '[1,2,3]', output: '6' }],
-    starter: 'def custom_sum(nums):\n    # TODO\n    return 0',
-    solution: 'def custom_sum(nums):\n    return sum(nums)',
+    examples: [{ input: '1 2 3', output: '6' }],
+    starter: "import sys\nnums = list(map(int, sys.stdin.read().split()))\n# TODO\nprint(0)",
+    solution: "import sys\nnums = list(map(int, sys.stdin.read().split()))\nprint(sum(nums))",
     explanation: '可直接使用 sum，或以迴圈累加。',
     hints: ['先建立累加器。'],
     checks: [{ label: '核心解法', input: '[1,2,3]', output: '6', tokens: ['sum('] }],
+    judge: {
+      kind: 'stdio',
+      cases: [
+        { label: '公開：基本資料', input: '1 2 3\n', expected: '6', hidden: false },
+        { label: '公開：負數', input: '-2 5\n', expected: '3', hidden: false },
+        { label: '隱藏：空輸入', input: '', expected: '0', hidden: true },
+      ],
+    },
   }],
 }, null, 2);
 
-export function AdminPanel({ problems, onChanged }: { problems: Problem[]; onChanged: () => Promise<void> }) {
+export function AdminPanel({ problems, onChanged }: { problems: (Problem & { judgeReady?: boolean })[]; onChanged: () => Promise<void> }) {
   const [payload, setPayload] = useState(sampleImport);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
@@ -149,8 +157,8 @@ export function AdminPanel({ problems, onChanged }: { problems: Problem[]; onCha
 
   return (
     <div className="grid gap-5 xl:grid-cols-[1.15fr_.85fr]">
-      <section className="rounded-2xl border bg-card shadow-sm"><div className="border-b p-5"><h2 className="flex items-center gap-2 font-black"><Upload className="size-5 text-primary" />批次匯入 JSON</h2><p className="mt-1 text-xs text-muted-foreground">一次最多 100 題；相同 ID 會更新，管理題 ID 必須從 1000 開始。</p></div><div className="p-5"><Textarea value={payload} onChange={(event) => setPayload(event.target.value)} spellCheck={false} className="min-h-[480px] font-mono text-xs leading-5" aria-label="題目匯入 JSON" /><div className="mt-4 flex items-center justify-between gap-3"><span className="text-xs text-muted-foreground">伺服器會完整驗證欄位與長度。</span><Button className="gap-2" disabled={busy} onClick={importProblems}>{busy ? <Loader2 className="animate-spin" /> : <Database />}驗證並匯入</Button></div>{message && <p className="mt-4 rounded-lg bg-secondary p-3 text-sm">{message}</p>}</div></section>
-      <section className="overflow-hidden rounded-2xl border bg-card shadow-sm"><div className="flex items-center justify-between border-b p-5"><div><h2 className="flex items-center gap-2 font-black"><ShieldCheck className="size-5 text-emerald-600" />管理題庫</h2><p className="mt-1 text-xs text-muted-foreground">目前 {problems.length} 題由後台管理。</p></div><Badge variant="outline">管理員</Badge></div>{problems.length ? <div className="max-h-[620px] divide-y overflow-y-auto">{problems.map((problem) => <div key={problem.id} className="flex items-center gap-3 p-4"><span className="grid size-8 shrink-0 place-items-center rounded-lg bg-secondary font-mono text-[10px]">{problem.id}</span><span className="min-w-0 flex-1"><strong className="block truncate text-sm">{problem.title}</strong><span className="text-[10px] text-muted-foreground">{problem.language} · {problem.difficulty}</span></span><Button variant="outline" size="sm" disabled={busy} onClick={() => deactivate(problem.id)}>停用</Button></div>)}</div> : <div className="p-12 text-center"><CheckCircle2 className="mx-auto size-8 text-muted-foreground/40" /><strong className="mt-3 block">尚無管理題目</strong><p className="mt-1 text-sm text-muted-foreground">可直接修改左側範例並匯入第一題。</p></div>}</section>
+      <section className="rounded-2xl border bg-card shadow-sm"><div className="border-b p-5"><h2 className="flex items-center gap-2 font-black"><Upload className="size-5 text-primary" />批次匯入 JSON</h2><p className="mt-1 text-xs text-muted-foreground">一次最多 100 題；相同 ID 會更新，管理題 ID 必須從 1000 開始。</p></div><div className="p-5"><Textarea value={payload} onChange={(event) => setPayload(event.target.value)} spellCheck={false} className="min-h-[560px] font-mono text-xs leading-5" aria-label="題目匯入 JSON" /><div className="mt-4 flex items-center justify-between gap-3"><span className="text-xs text-muted-foreground">`judge.cases` 可設定公開／隱藏測試；隱藏內容不會送到前端。</span><Button className="gap-2" disabled={busy} onClick={importProblems}>{busy ? <Loader2 className="animate-spin" /> : <Database />}驗證並匯入</Button></div>{message && <p className="mt-4 rounded-lg bg-secondary p-3 text-sm">{message}</p>}</div></section>
+      <section className="overflow-hidden rounded-2xl border bg-card shadow-sm"><div className="flex items-center justify-between border-b p-5"><div><h2 className="flex items-center gap-2 font-black"><ShieldCheck className="size-5 text-emerald-600" />管理題庫</h2><p className="mt-1 text-xs text-muted-foreground">目前 {problems.length} 題由後台管理。</p></div><Badge variant="outline">管理員</Badge></div>{problems.length ? <div className="max-h-[620px] divide-y overflow-y-auto">{problems.map((problem) => <div key={problem.id} className="flex items-center gap-3 p-4"><span className="grid size-8 shrink-0 place-items-center rounded-lg bg-secondary font-mono text-[10px]">{problem.id}</span><span className="min-w-0 flex-1"><strong className="block truncate text-sm">{problem.title}</strong><span className="flex items-center gap-2 text-[10px] text-muted-foreground">{problem.language} · {problem.difficulty}<Badge variant="outline" className="h-5 text-[9px]">{problem.judgeReady ? '沙箱測試' : '結構判題'}</Badge></span></span><Button variant="outline" size="sm" disabled={busy} onClick={() => deactivate(problem.id)}>停用</Button></div>)}</div> : <div className="p-12 text-center"><CheckCircle2 className="mx-auto size-8 text-muted-foreground/40" /><strong className="mt-3 block">尚無管理題目</strong><p className="mt-1 text-sm text-muted-foreground">可直接修改左側範例並匯入第一題。</p></div>}</section>
     </div>
   );
 }

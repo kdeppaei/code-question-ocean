@@ -3,6 +3,7 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import {
   ArrowLeft,
+  ArrowRight,
   BookOpen,
   Braces,
   Bug,
@@ -45,6 +46,7 @@ import { Input } from '@/components/ui/input';
 import { Progress } from '@/components/ui/progress';
 import { Textarea } from '@/components/ui/textarea';
 import { AdminPanel, LeaderboardPanel, type SessionInfo } from '@/components/platform-panels';
+import { CoachPanel } from '@/components/coach-panel';
 import {
   languageMeta,
   lessons,
@@ -60,6 +62,7 @@ const CodeEditor = lazy(() => import('@/components/code-editor').then((module) =
 
 type View = 'home' | 'problems' | 'workspace' | 'learn' | 'algorithms' | 'progress' | 'favorites' | 'leaderboard' | 'admin';
 type CodeFile = { id: string; name: string; content: string };
+type PlatformProblem = Problem & { judgeReady?: boolean };
 type RunResult = {
   label: string;
   input: string;
@@ -175,7 +178,7 @@ function PageTitle({ eyebrow, title, copy }: { eyebrow: string; title: string; c
 
 export default function Home() {
   const [view, setView] = useState<View>('home');
-  const [selectedProblem, setSelectedProblem] = useState<Problem>(problems[0]);
+  const [selectedProblem, setSelectedProblem] = useState<PlatformProblem>(problems[0]);
   const [selectedLesson, setSelectedLesson] = useState<Lesson | null>(null);
   const [files, setFiles] = useState<CodeFile[]>(initialFiles(problems[0]));
   const [activeFileId, setActiveFileId] = useState('main');
@@ -198,7 +201,8 @@ export default function Home() {
   const [editorNotice, setEditorNotice] = useState('');
   const [customInput, setCustomInput] = useState('');
   const [session, setSession] = useState<SessionInfo | null>(null);
-  const [customProblems, setCustomProblems] = useState<Problem[]>([]);
+  const [customProblems, setCustomProblems] = useState<PlatformProblem[]>([]);
+  const [judgeHealth, setJudgeHealth] = useState<{ online: boolean; engine: string; fallback: boolean } | null>(null);
 
   const activeFile = files.find((file) => file.id === activeFileId) || files[0];
   const code = activeFile?.content || '';
@@ -212,7 +216,7 @@ export default function Home() {
   const refreshCustomProblems = async () => {
     const response = await fetch('/api/problems', { headers: { accept: 'application/json' } });
     if (!response.ok) throw new Error('管理題庫暫時無法載入。');
-    const payload = await response.json() as { problems?: Problem[] };
+    const payload = await response.json() as { problems?: PlatformProblem[] };
     setCustomProblems(payload.problems || []);
   };
 
@@ -258,9 +262,18 @@ export default function Home() {
 
   useEffect(() => {
     let active = true;
+    fetch('/api/judge/health', { headers: { accept: 'application/json' } })
+      .then((response) => response.json() as Promise<{ online: boolean; engine: string; fallback: boolean }>)
+      .then((payload) => { if (active) setJudgeHealth(payload); })
+      .catch(() => { if (active) setJudgeHealth({ online: false, engine: '判題服務離線', fallback: false }); });
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
     Promise.all([
       fetch('/api/session', { headers: { accept: 'application/json' } }).then((response) => response.json() as Promise<SessionInfo>),
-      fetch('/api/problems', { headers: { accept: 'application/json' } }).then((response) => response.json() as Promise<{ problems?: Problem[] }>),
+      fetch('/api/problems', { headers: { accept: 'application/json' } }).then((response) => response.json() as Promise<{ problems?: PlatformProblem[] }>),
     ]).then(([sessionPayload, problemPayload]) => {
       if (!active) return;
       setSession(sessionPayload);
@@ -317,7 +330,7 @@ export default function Home() {
   const problemPageCount = Math.max(1, Math.ceil(filteredProblems.length / pageSize));
   const visibleProblems = filteredProblems.slice((problemPage - 1) * pageSize, problemPage * pageSize);
 
-  const openProblem = (problem: Problem) => {
+  const openProblem = (problem: PlatformProblem) => {
     setSelectedProblem(problem);
     const savedDraft = localStorage.getItem(`codedive-draft-${problem.id}`);
     const nextFiles = parseDraft(problem, savedDraft);
@@ -364,7 +377,25 @@ export default function Home() {
     const id = `${Date.now()}-${nextNumber}`;
     setFiles((current) => [...current, { id, name: `helper${nextNumber}.${fileExtensions[selectedProblem.language]}`, content: '' }]);
     setActiveFileId(id);
-    setEditorNotice('已新增檔案；執行時會依分頁順序合併');
+    setEditorNotice('已新增檔案；支援 Judge0 多檔專案執行');
+  };
+
+  const renameFile = (id: string, name: string) => {
+    setFiles((current) => current.map((file) => file.id === id ? { ...file, name: name.slice(0, 64) } : file));
+    setResults([]);
+    setResultMode('idle');
+  };
+
+  const moveFile = (id: string, direction: -1 | 1) => {
+    setFiles((current) => {
+      const index = current.findIndex((file) => file.id === id);
+      const destination = index + direction;
+      if (index < 0 || destination < 0 || destination >= current.length) return current;
+      const next = [...current];
+      [next[index], next[destination]] = [next[destination], next[index]];
+      return next;
+    });
+    setEditorNotice('已更新檔案順序');
   };
 
   const removeFile = (id: string) => {
@@ -397,13 +428,13 @@ export default function Home() {
   const evaluate = async (mode: 'run' | 'submit' | 'custom') => {
     setJudgeError('');
     setJudgeLoading(true);
-    const usesSandbox = selectedProblem.language !== 'GDB' && selectedProblem.id < 1000;
+    const usesSandbox = selectedProblem.language !== 'GDB' && (selectedProblem.id < 1000 || selectedProblem.judgeReady);
     if (usesSandbox) {
       try {
         const response = await fetch('/api/judge', {
           method: 'POST',
           headers: { 'content-type': 'application/json', accept: 'application/json' },
-          body: JSON.stringify({ problemId: selectedProblem.id, source: submissionSource, mode, customInput: mode === 'custom' ? customInput : undefined }),
+          body: JSON.stringify({ problemId: selectedProblem.id, source: submissionSource, files, mode, customInput: mode === 'custom' ? customInput : undefined }),
         });
         const payload = await response.json() as { results?: RunResult[]; error?: string };
         if (!response.ok || !payload.results) throw new Error(payload.error || '安全判題服務暫時無法使用。');
@@ -594,17 +625,18 @@ export default function Home() {
               <section className="flex min-h-[680px] flex-col overflow-hidden rounded-xl border bg-card shadow-sm">
                 <div className="flex items-center justify-between border-b bg-[#111827] px-4 py-3 text-slate-100"><div className="flex items-center gap-2"><Code2 className="size-4 text-blue-400" /><strong className="text-sm">智慧解答編輯器</strong>{editorNotice && <span className="hidden text-[10px] text-emerald-400 sm:inline">✓ {editorNotice}</span>}</div><div className="flex items-center gap-2"><Badge className="hidden border-white/10 bg-white/10 text-slate-300 sm:inline-flex">自動完成</Badge><Badge className="border-white/10 bg-white/10 text-slate-200">{selectedProblem.language}</Badge></div></div>
                 <div className="flex items-center gap-1 overflow-x-auto border-b border-slate-700 bg-[#0d1321] px-2 pt-2 text-slate-300">
-                  {files.map((file) => <div key={file.id} className={`flex shrink-0 items-center rounded-t-lg border border-b-0 ${file.id === activeFileId ? 'border-slate-600 bg-[#111827] text-white' : 'border-transparent bg-slate-900/50'}`}><button className="flex items-center gap-1.5 px-3 py-2 font-mono text-[11px]" onClick={() => setActiveFileId(file.id)}><FileCode2 className="size-3.5" />{file.name}</button>{files.length > 1 && <button className="mr-1 rounded p-1 text-slate-500 hover:bg-white/10 hover:text-white" aria-label={`刪除 ${file.name}`} onClick={() => removeFile(file.id)}>×</button>}</div>)}
+                  {files.map((file, index) => <div key={file.id} className={`flex shrink-0 items-center rounded-t-lg border border-b-0 ${file.id === activeFileId ? 'border-slate-600 bg-[#111827] text-white' : 'border-transparent bg-slate-900/50'}`}><FileCode2 className="ml-2 size-3.5 shrink-0" /><input value={file.name} maxLength={64} aria-label={`檔名 ${index + 1}`} onFocus={() => setActiveFileId(file.id)} onChange={(event) => renameFile(file.id, event.target.value)} className="w-28 bg-transparent px-1 py-2 font-mono text-[11px] outline-none" /><button className="rounded p-1 text-slate-500 hover:bg-white/10 hover:text-white disabled:opacity-25" aria-label={`將 ${file.name} 向左移`} disabled={index === 0} onClick={() => moveFile(file.id, -1)}><ArrowLeft className="size-3" /></button><button className="rounded p-1 text-slate-500 hover:bg-white/10 hover:text-white disabled:opacity-25" aria-label={`將 ${file.name} 向右移`} disabled={index === files.length - 1} onClick={() => moveFile(file.id, 1)}><ArrowRight className="size-3" /></button>{files.length > 1 && <button className="mr-1 rounded p-1 text-slate-500 hover:bg-white/10 hover:text-white" aria-label={`刪除 ${file.name}`} onClick={() => removeFile(file.id)}>×</button>}</div>)}
                   <button className="mb-1 grid size-8 shrink-0 place-items-center rounded-lg text-slate-400 hover:bg-white/10 hover:text-white" aria-label="新增檔案" onClick={addFile}><Plus className="size-4" /></button>
+                  {files.length > 1 && <span className="mb-1 shrink-0 rounded-full bg-violet-500/15 px-2 py-1 text-[9px] font-bold text-violet-300">MULTI-FILE</span>}
                 </div>
                 <Suspense fallback={<div className="grid min-h-[390px] flex-1 place-items-center bg-[#0d1321] text-sm text-slate-400"><span className="flex items-center gap-2"><Loader2 className="size-4 animate-spin" />載入智慧編輯器…</span></div>}><CodeEditor value={code} language={selectedProblem.language} onChange={(value) => { setCode(value); setResultMode('idle'); setResults([]); setJudgeError(''); setEditorNotice(''); }} onRun={() => void evaluate('run')} onSubmit={() => void evaluate('submit')} onSave={saveDraft} /></Suspense>
                 <details className="border-t bg-secondary/20 px-4 py-3">
                   <summary className="cursor-pointer text-xs font-bold text-primary">自訂測試輸入</summary>
-                  <div className="mt-3 flex flex-col gap-2 sm:flex-row"><Textarea value={customInput} onChange={(event) => setCustomInput(event.target.value)} className="min-h-20 flex-1 font-mono text-xs" maxLength={10000} placeholder="輸入傳給題目測試包裝器的 stdin…" aria-label="自訂測試輸入" /><Button variant="outline" className="gap-2 self-end" disabled={judgeLoading || selectedProblem.language === 'GDB' || selectedProblem.id >= 1000} onClick={() => void evaluate('custom')}><Play />執行自訂測試</Button></div>
-                  {(selectedProblem.language === 'GDB' || selectedProblem.id >= 1000) && <p className="mt-2 text-[11px] text-muted-foreground">管理題與 GDB 題採結構判題，請使用內建範例測試。</p>}
+                  <div className="mt-3 flex flex-col gap-2 sm:flex-row"><Textarea value={customInput} onChange={(event) => setCustomInput(event.target.value)} className="min-h-20 flex-1 font-mono text-xs" maxLength={10000} placeholder="輸入傳給題目測試包裝器的 stdin…" aria-label="自訂測試輸入" /><Button variant="outline" className="gap-2 self-end" disabled={judgeLoading || selectedProblem.language === 'GDB' || (selectedProblem.id >= 1000 && !selectedProblem.judgeReady)} onClick={() => void evaluate('custom')}><Play />執行自訂測試</Button></div>
+                  {(selectedProblem.language === 'GDB' || (selectedProblem.id >= 1000 && !selectedProblem.judgeReady)) && <p className="mt-2 text-[11px] text-muted-foreground">這題採結構判題，請使用內建範例測試。</p>}
                 </details>
                 <div className="border-t">
-                  <div className="flex items-center justify-between border-b px-4 py-3"><strong className="flex items-center gap-2 text-sm"><TestTube2 className="size-4 text-primary" />測試結果</strong><span className="text-[10px] text-muted-foreground">{selectedProblem.language !== 'GDB' && selectedProblem.id < 1000 ? 'Judge0 安全沙箱' : '引導式結構判題'}</span></div>
+                  <div className="flex items-center justify-between border-b px-4 py-3"><strong className="flex items-center gap-2 text-sm"><TestTube2 className="size-4 text-primary" />測試結果</strong><span className="flex items-center gap-1.5 text-[10px] text-muted-foreground"><span className={`size-1.5 rounded-full ${selectedProblem.language === 'GDB' || (selectedProblem.id >= 1000 && !selectedProblem.judgeReady) ? 'bg-slate-400' : judgeHealth?.online ? 'bg-emerald-500' : 'bg-amber-500'}`} />{selectedProblem.language !== 'GDB' && (selectedProblem.id < 1000 || selectedProblem.judgeReady) ? `${files.length > 1 ? '多檔專案 · ' : ''}${judgeHealth?.engine || '檢查沙箱中'}` : '引導式結構判題'}</span></div>
                   <div className="min-h-36 p-4">
                     {judgeLoading ? <div className="grid min-h-28 place-items-center text-center"><div><Loader2 className="mx-auto size-6 animate-spin text-primary" /><p className="mt-2 text-sm text-muted-foreground">正在安全沙箱編譯並執行測試…</p></div></div> : judgeError ? <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700 dark:border-rose-900 dark:bg-rose-950/30 dark:text-rose-300"><strong className="flex items-center gap-2"><XCircle className="size-4" />判題未完成</strong><p className="mt-2">{judgeError}</p></div> : resultMode === 'idle' ? <div className="grid min-h-28 place-items-center text-center"><div><TerminalSquare className="mx-auto size-6 text-muted-foreground/50" /><p className="mt-2 text-sm text-muted-foreground">按「執行測試」檢查兩個範例，或提交全部測試。</p></div></div> : <div><div className={`mb-3 flex items-center gap-2 font-bold ${results.every((result) => result.passed) ? 'text-emerald-600' : 'text-rose-600'}`}>{results.every((result) => result.passed) ? <CheckCircle2 className="size-5" /> : <XCircle className="size-5" />}{results.every((result) => result.passed) ? (resultMode === 'submit' ? '全部通過，提交成功！' : resultMode === 'custom' ? '自訂測試執行完成' : '範例測試通過') : '還有測試未通過'}</div><div className="grid gap-2 sm:grid-cols-3">{results.map((result) => <div key={result.label} className={`rounded-lg border p-3 text-xs ${result.passed ? 'border-emerald-200 bg-emerald-50 dark:border-emerald-900 dark:bg-emerald-950/30' : 'border-rose-200 bg-rose-50 dark:border-rose-900 dark:bg-rose-950/30'}`}><div className="flex items-center gap-1 font-bold">{result.passed ? <Check className="size-3.5 text-emerald-600" /> : <XCircle className="size-3.5 text-rose-600" />}{result.label}</div><p className="mt-1 truncate text-muted-foreground">輸入：{result.input}</p><p className="truncate text-muted-foreground">預期：{result.output}</p>{result.actual !== undefined && <p className="truncate text-muted-foreground">實際：{result.actual || '（無輸出）'}</p>}{result.error && <p className="mt-2 line-clamp-3 text-rose-600">{result.error}</p>}</div>)}</div></div>}
                   </div>
@@ -613,6 +645,14 @@ export default function Home() {
               </section>
             </div>
 
+            <CoachPanel
+              problem={selectedProblem}
+              source={submissionSource}
+              fileCount={files.length}
+              judgeMessage={[judgeError, ...results.map((result) => result.error || result.status || '')].filter(Boolean).join('\n')}
+              learning={{ solved: learning.solved.length, wrong: learning.wrong.length, submissions: learning.submissions, accuracy }}
+              session={session}
+            />
             {showSolution && <section className="mt-3 rounded-xl border border-primary/20 bg-card p-6 shadow-sm" aria-live="polite"><div className="flex items-start gap-3"><span className="grid size-10 shrink-0 place-items-center rounded-xl bg-primary/10 text-primary"><Eye className="size-5" /></span><div className="min-w-0 flex-1"><p className="text-xs font-black tracking-[.12em] text-primary">REFERENCE SOLUTION</p><h2 className="mt-1 text-xl font-black">參考解答與思路</h2><p className="mt-3 max-w-4xl text-sm leading-7 text-muted-foreground">{selectedProblem.explanation}</p><pre className="mt-4 overflow-x-auto rounded-xl bg-[#111827] p-5 font-mono text-xs leading-6 text-slate-100"><code>{selectedProblem.solution}</code></pre></div></div></section>}
             {resultMode === 'submit' && results.every((result) => result.passed) && <section className="mt-3 rounded-xl border bg-emerald-50 p-5 text-emerald-800 shadow-sm dark:bg-emerald-950/30 dark:text-emerald-200"><div className="flex items-center gap-3"><Trophy className="size-5" /><div><strong>提交成功，這題已記入學習進度。</strong><p className="mt-1 text-xs opacity-80">可以前往下一題，或用上方按鈕比較參考解答。</p></div></div></section>}
           </div>

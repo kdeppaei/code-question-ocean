@@ -17,12 +17,15 @@
 - 全部 160 題 C、C++、Python、SQL 練習使用 Judge0 CE 安全沙箱實際編譯或執行
 - 40 題 GDB 練習使用引導式結構判題，並保留範例測試與提交紀錄
 - CodeMirror 智慧編輯器，提供五種專項語法高亮與自動完成
-- 多檔分頁草稿與自訂 stdin 測試；送出時依分頁順序組合程式碼
+- 多檔分頁草稿、自訂檔名、左右排序與自訂 stdin 測試
+- C、C++、Python、SQL 多檔專案使用 Judge0 Multi-file program 執行；C／C++ 原始檔會分開編譯與連結
 - `Ctrl+Enter` 執行、`Ctrl+Shift+Enter` 提交、`Ctrl+S` 儲存草稿等快捷鍵
 - 15 篇繁體中文短篇教學，並連結相關練習
 - D1 帳號進度同步；離線或無法同步時自動保留在本機
 - 自願加入的公開排行榜（只公開顯示名稱與學習統計）
-- 管理員 JSON 批次匯入／更新／停用題目後台
+- 管理員 JSON 批次匯入／更新／停用題目後台，支援不送往前端的隱藏測試
+- 智慧助教提供錯誤解析、核心觀念與個人化下一步；未設定 OpenAI 金鑰時自動使用本機隱私分析
+- 判題服務健康狀態與主要／備援端點監控
 - 公開判題要求 ChatGPT 登入，並限制每帳號每分鐘 20 次
 - 響應式版面與深色模式
 
@@ -34,6 +37,8 @@
 - `JUDGE0_API_URL`：主要 Judge0 HTTPS 端點
 - `JUDGE0_AUTH_HEADER`、`JUDGE0_AUTH_TOKEN`：自架 Judge0 驗證標頭與密鑰
 - `JUDGE0_FALLBACK_API_URL`：主要端點故障時的備援端點（選用）
+- `OPENAI_API_KEY`：啟用 OpenAI Responses API 智慧助教（選用且必須設為 secret）
+- `OPENAI_MODEL`：智慧助教模型，預設 `gpt-5.4-mini`
 
 ## 本機開發
 

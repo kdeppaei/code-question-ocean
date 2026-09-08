@@ -22,6 +22,7 @@ export const leaderboardProfiles = sqliteTable('leaderboard_profiles', {
 export const customProblems = sqliteTable('custom_problems', {
   id: integer('id').primaryKey(),
   dataJson: text('data_json').notNull(),
+  judgeJson: text('judge_json'),
   active: integer('active', { mode: 'boolean' }).notNull().default(true),
   createdBy: text('created_by').notNull(),
   updatedAt: integer('updated_at').notNull(),

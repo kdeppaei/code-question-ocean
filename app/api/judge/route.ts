@@ -2,14 +2,20 @@ import { env } from 'cloudflare:workers';
 import { generatedJudgeDefinitions } from '@/lib/generated-judge-definitions';
 import { getRequestIdentity } from '@/lib/auth';
 import { ensureProgressSchema } from '@/lib/db';
+import { createMultiFileArchive, validateSourceFiles, type SourceFile } from '@/lib/judge-project';
+import { judgeConfigSchema, problemSchema } from '@/lib/problem-schema';
+import { consumeRequestLimit } from '@/lib/rate-limit';
+import { problems, type Language } from '@/app/content';
 
 export const dynamic = 'force-dynamic';
 
-type JudgeCase = { input: string; expected: string };
+type JudgeCase = { input: string; expected: string; label?: string; hidden?: boolean };
 type JudgeDefinition = {
   languageId: number;
   cases: JudgeCase[];
   wrap: (source: string, input: string) => { source: string; stdin: string };
+  language?: Language;
+  custom?: boolean;
 };
 
 const cPrelude = '#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n#include <ctype.h>\n';
@@ -103,33 +109,35 @@ const definitions: Record<number, JudgeDefinition> = {
   ...generatedJudgeDefinitions,
 };
 
+const languageIds: Partial<Record<Language, number>> = { C: 103, 'C++': 105, Python: 109, SQL: 82 };
+
+async function resolveDefinition(problemId: number): Promise<JudgeDefinition | null> {
+  if (definitions[problemId]) return { ...definitions[problemId], language: problems.find((problem) => problem.id === problemId)?.language };
+  if (problemId < 1000) return null;
+  const db = await ensureProgressSchema();
+  const row = await db.prepare('SELECT data_json, judge_json FROM custom_problems WHERE id = ? AND active = 1')
+    .bind(problemId)
+    .first<{ data_json: string; judge_json: string | null }>();
+  if (!row?.judge_json) return null;
+  try {
+    const problem = problemSchema.parse(JSON.parse(row.data_json));
+    const judge = judgeConfigSchema.parse(JSON.parse(row.judge_json));
+    const languageId = languageIds[problem.language];
+    if (!languageId) return null;
+    return {
+      languageId,
+      language: problem.language,
+      custom: true,
+      cases: judge.cases,
+      wrap: (source, input) => ({ source, stdin: input }),
+    };
+  } catch {
+    return null;
+  }
+}
+
 function normalizeOutput(value: string | null | undefined) {
   return (value || '').replace(/\r/g, '').trim().replace(/[ \t]+$/gm, '');
-}
-
-function isLocalRequest(request: Request) {
-  const hostname = new URL(request.url).hostname;
-  return hostname === 'localhost' || hostname === '127.0.0.1';
-}
-
-async function rateLimit(request: Request, userId: string) {
-  if (isLocalRequest(request)) return null;
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(userId));
-  const key = Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, '0')).join('');
-  const windowStart = Math.floor(Date.now() / 60_000) * 60_000;
-  const db = await ensureProgressSchema();
-  const row = await db.prepare(`
-    INSERT INTO judge_rate_limits (key, window_start, request_count)
-    VALUES (?, ?, 1)
-    ON CONFLICT(key) DO UPDATE SET
-      request_count = CASE WHEN window_start = excluded.window_start THEN request_count + 1 ELSE 1 END,
-      window_start = excluded.window_start
-    RETURNING request_count
-  `).bind(key, windowStart).first<{ request_count: number }>();
-  if ((row?.request_count || 1) > 20) {
-    return Response.json({ error: '每分鐘最多執行 20 次，請稍後再試。' }, { status: 429, headers: { 'Retry-After': '60' } });
-  }
-  return null;
 }
 
 type JudgeResult = {
@@ -147,8 +155,12 @@ async function submitToJudge(
   source: string,
   input: string,
   headers: Record<string, string>,
+  language: Language | undefined,
+  files: SourceFile[] | undefined,
 ) {
   const wrapped = definition.wrap(source, input);
+  const useMultiFile = Boolean(language && files && files.length > 1 && language !== 'GDB');
+  const additionalFiles = useMultiFile ? await createMultiFileArchive(language!, wrapped.source, files!) : undefined;
   let lastError: unknown;
   for (const endpoint of endpoints) {
     const controller = new AbortController();
@@ -158,8 +170,8 @@ async function submitToJudge(
         method: 'POST',
         headers: { 'content-type': 'application/json', accept: 'application/json', ...headers },
         body: JSON.stringify({
-          language_id: definition.languageId,
-          source_code: wrapped.source,
+          language_id: useMultiFile ? 89 : definition.languageId,
+          ...(useMultiFile ? { additional_files: additionalFiles } : { source_code: wrapped.source }),
           stdin: wrapped.stdin,
           cpu_time_limit: 3,
           wall_time_limit: 6,
@@ -182,22 +194,30 @@ async function submitToJudge(
 export async function POST(request: Request) {
   const identity = getRequestIdentity(request);
   if (!identity) return Response.json({ error: '請先登入後使用安全判題。' }, { status: 401 });
-  if (Number(request.headers.get('content-length') || 0) > 30_000) return Response.json({ error: '程式碼過長。' }, { status: 413 });
+  if (Number(request.headers.get('content-length') || 0) > 100_000) return Response.json({ error: '程式碼或檔案內容過長。' }, { status: 413 });
 
-  const limited = await rateLimit(request, identity.userId);
+  const limited = await consumeRequestLimit(request, identity.userId, 'judge', 20, 60_000);
   if (limited) return limited;
 
-  let body: { problemId?: number; source?: string; mode?: 'run' | 'submit' | 'custom'; customInput?: string };
+  let body: { problemId?: number; source?: string; files?: unknown; mode?: 'run' | 'submit' | 'custom'; customInput?: string };
   try {
     body = await request.json();
   } catch {
     return Response.json({ error: '資料格式錯誤。' }, { status: 400 });
   }
 
-  const definition = definitions[Number(body.problemId)];
-  const source = typeof body.source === 'string' ? body.source : '';
+  const problemId = Number(body.problemId);
+  if (!Number.isInteger(problemId) || problemId < 1 || !['run', 'submit', 'custom'].includes(body.mode || '')) {
+    return Response.json({ error: '判題模式或題目編號錯誤。' }, { status: 400 });
+  }
+  const definition = await resolveDefinition(problemId);
+  const fileValidation = validateSourceFiles(body.files);
+  if (fileValidation.error) return Response.json({ error: fileValidation.error }, { status: 400 });
+  const files = fileValidation.files;
+  const mainFile = files?.find((file) => file.id === 'main') || files?.[0];
+  const source = mainFile?.content ?? (typeof body.source === 'string' ? body.source : '');
   if (!definition) return Response.json({ error: '這一題使用教學版結構判題。' }, { status: 422 });
-  if (!source.trim() || source.length > 20_000) return Response.json({ error: '請輸入有效且不超過 20,000 字元的程式碼。' }, { status: 400 });
+  if (!source.trim() || source.length > 60_000) return Response.json({ error: '請輸入有效且不超過 60,000 字元的程式碼。' }, { status: 400 });
   if (body.mode === 'custom' && (typeof body.customInput !== 'string' || body.customInput.length > 10_000)) {
     return Response.json({ error: '自訂輸入不可超過 10,000 字元。' }, { status: 400 });
   }
@@ -205,8 +225,9 @@ export async function POST(request: Request) {
   const cases = body.mode === 'custom'
     ? [{ input: body.customInput || '', expected: '' }]
     : body.mode === 'run'
-      ? definition.cases.slice(0, Math.min(2, definition.cases.length))
+      ? definition.cases.filter((test) => !test.hidden).slice(0, Math.min(2, definition.cases.length))
       : definition.cases;
+  if (cases.length === 0) return Response.json({ error: '這一題沒有可執行的測試。' }, { status: 422 });
   const runtime = env as unknown as Record<string, string | undefined>;
   const primary = (runtime.JUDGE0_API_URL || 'https://ce.judge0.com').replace(/\/$/, '');
   const fallback = runtime.JUDGE0_FALLBACK_API_URL?.replace(/\/$/, '');
@@ -220,13 +241,13 @@ export async function POST(request: Request) {
     let activeEndpoint = primary;
     for (let index = 0; index < cases.length; index++) {
       const test = cases[index];
-      const submission = await submitToJudge(endpoints, definition, source, test.input, judgeHeaders);
+      const submission = await submitToJudge(endpoints, definition, source, test.input, judgeHeaders, definition.language, files);
       const result = submission.result;
       activeEndpoint = submission.endpoint;
       const actual = normalizeOutput(result.stdout);
       const expected = normalizeOutput(test.expected);
       results.push({
-        label: body.mode === 'custom' ? '自訂測試' : `測試 ${index + 1}`,
+        label: body.mode === 'custom' ? '自訂測試' : body.mode === 'submit' && test.hidden ? `隱藏測試 ${index + 1}` : test.label || `測試 ${index + 1}`,
         input: body.mode === 'submit' ? '隱藏測試' : test.input.trim() || '內建資料表',
         output: body.mode === 'custom' ? '不比對預期輸出' : body.mode === 'submit' ? '隱藏' : expected,
         actual: body.mode === 'submit' ? undefined : actual,

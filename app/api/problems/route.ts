@@ -4,12 +4,12 @@ import { problemImportSchema, problemSchema, type ImportedProblem } from '@/lib/
 
 export const dynamic = 'force-dynamic';
 
-type StoredProblemRow = { id: number; data_json: string; updated_at: number };
+type StoredProblemRow = { id: number; data_json: string; judge_json: string | null; updated_at: number };
 
 export async function GET() {
   const db = await ensureProgressSchema();
   const rows = await db.prepare(`
-    SELECT id, data_json, updated_at
+    SELECT id, data_json, judge_json, updated_at
     FROM custom_problems
     WHERE active = 1
     ORDER BY id
@@ -19,7 +19,7 @@ export async function GET() {
   for (const row of rows.results || []) {
     try {
       const parsed = problemSchema.safeParse(JSON.parse(row.data_json));
-      if (parsed.success) problems.push(parsed.data);
+      if (parsed.success) problems.push({ ...parsed.data, judgeReady: Boolean(row.judge_json) } as ImportedProblem);
     } catch {
       // Skip a damaged row instead of breaking the public problem set.
     }
@@ -44,15 +44,19 @@ export async function POST(request: Request) {
 
   const db = await ensureProgressSchema();
   const updatedAt = Date.now();
-  const statements = parsed.data.problems.map((problem) => db.prepare(`
-    INSERT INTO custom_problems (id, data_json, active, created_by, updated_at)
-    VALUES (?, ?, 1, ?, ?)
+  const statements = parsed.data.problems.map((problem) => {
+    const { judge, ...publicProblem } = problem;
+    return db.prepare(`
+    INSERT INTO custom_problems (id, data_json, judge_json, active, created_by, updated_at)
+    VALUES (?, ?, ?, 1, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       data_json = excluded.data_json,
+      judge_json = excluded.judge_json,
       active = 1,
       created_by = excluded.created_by,
       updated_at = excluded.updated_at
-  `).bind(problem.id, JSON.stringify(problem), identity!.userId, updatedAt));
+  `).bind(problem.id, JSON.stringify(publicProblem), judge ? JSON.stringify(judge) : null, identity!.userId, updatedAt);
+  });
   await db.batch(statements);
   return Response.json({ ok: true, imported: parsed.data.problems.length });
 }

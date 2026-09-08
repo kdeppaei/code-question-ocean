@@ -32,6 +32,7 @@ export async function ensureProgressSchema() {
       CREATE TABLE IF NOT EXISTS custom_problems (
         id INTEGER PRIMARY KEY NOT NULL,
         data_json TEXT NOT NULL,
+        judge_json TEXT,
         active INTEGER DEFAULT 1 NOT NULL,
         created_by TEXT NOT NULL,
         updated_at INTEGER NOT NULL

@@ -1,6 +1,6 @@
 # CodeDive self-hosted Judge0
 
-This bundle installs Judge0 CE **v1.13.1** on a fresh Ubuntu 22.04 LTS host. It enables token authentication, disables submission networking and optional callbacks/files/compiler flags, and lowers the maximum resource limits used by this site.
+This bundle installs Judge0 CE **v1.13.1** on a fresh Ubuntu 22.04 LTS host. It enables token authentication, disables submission networking, callbacks and compiler flags, caps extracted multi-file projects at 2 MB, and lowers the maximum resource limits used by this site.
 
 ## Requirements
 

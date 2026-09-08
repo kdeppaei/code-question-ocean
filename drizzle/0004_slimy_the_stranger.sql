@@ -1,0 +1,1 @@
+ALTER TABLE `custom_problems` ADD `judge_json` text;

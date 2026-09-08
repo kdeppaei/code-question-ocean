@@ -1,4 +1,5 @@
 import { env } from 'cloudflare:workers';
+import { generatedJudgeDefinitions } from '@/lib/generated-judge-definitions';
 
 export const dynamic = 'force-dynamic';
 
@@ -12,7 +13,7 @@ type JudgeDefinition = {
 const cPrelude = '#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n#include <ctype.h>\n';
 const cppPrelude = '#include <bits/stdc++.h>\nusing namespace std;\n';
 
-const definitions: Record<number, JudgeDefinition> = {
+const coreDefinitions: Record<number, JudgeDefinition> = {
   1: {
     languageId: 103,
     cases: [{ input: '5\n3 1 4 1 5\n', expected: '14' }, { input: '0\n', expected: '0' }, { input: '3\n-2 5 -1\n', expected: '2' }],
@@ -95,6 +96,11 @@ const definitions: Record<number, JudgeDefinition> = {
   },
 };
 
+const definitions: Record<number, JudgeDefinition> = {
+  ...coreDefinitions,
+  ...generatedJudgeDefinitions,
+};
+
 function normalizeOutput(value: string | null | undefined) {
   return (value || '').replace(/\r/g, '').trim().replace(/[ \t]+$/gm, '');
 }
@@ -154,9 +160,9 @@ export async function POST(request: Request) {
       const expected = normalizeOutput(test.expected);
       results.push({
         label: `測試 ${index + 1}`,
-        input: test.input.trim() || '內建資料表',
-        output: expected,
-        actual,
+        input: body.mode === 'submit' ? '隱藏測試' : test.input.trim() || '內建資料表',
+        output: body.mode === 'submit' ? '隱藏' : expected,
+        actual: body.mode === 'submit' ? undefined : actual,
         passed: result.status?.description === 'Accepted' && actual === expected,
         status: result.status?.description || 'Unknown',
         error: normalizeOutput(result.compile_output || result.stderr),

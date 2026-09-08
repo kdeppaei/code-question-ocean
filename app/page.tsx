@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import {
   ArrowLeft,
   BookOpen,
@@ -40,7 +40,6 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Progress } from '@/components/ui/progress';
-import { Textarea } from '@/components/ui/textarea';
 import {
   languageMeta,
   lessons,
@@ -51,6 +50,8 @@ import {
   type Problem,
 } from './content';
 import { algorithmTracks } from './drills';
+
+const CodeEditor = lazy(() => import('@/components/code-editor').then((module) => ({ default: module.CodeEditor })));
 
 type View = 'home' | 'problems' | 'workspace' | 'learn' | 'algorithms' | 'progress' | 'favorites';
 type RunResult = {
@@ -167,6 +168,7 @@ export default function Home() {
   const [syncState, setSyncState] = useState<SyncState>('loading');
   const [syncEmail, setSyncEmail] = useState('');
   const [cloudReady, setCloudReady] = useState(false);
+  const [editorNotice, setEditorNotice] = useState('');
 
   useEffect(() => {
     let active = true;
@@ -256,11 +258,13 @@ export default function Home() {
 
   const openProblem = (problem: Problem) => {
     setSelectedProblem(problem);
-    setCode(problem.starter);
+    const savedDraft = localStorage.getItem(`codedive-draft-${problem.id}`);
+    setCode(savedDraft || problem.starter);
     setResults([]);
     setResultMode('idle');
     setShowSolution(false);
     setJudgeError('');
+    setEditorNotice(savedDraft ? '已載入上次儲存的草稿' : '');
     setView('workspace');
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
@@ -287,6 +291,11 @@ export default function Home() {
     }));
   };
 
+  const saveDraft = () => {
+    localStorage.setItem(`codedive-draft-${selectedProblem.id}`, code);
+    setEditorNotice('草稿已儲存在這台裝置');
+  };
+
   const recordSubmission = (passed: boolean) => {
     const id = selectedProblem.id;
     setLearning((current) => {
@@ -308,7 +317,7 @@ export default function Home() {
   const evaluate = async (mode: 'run' | 'submit') => {
     setJudgeError('');
     setJudgeLoading(true);
-    const usesSandbox = selectedProblem.id <= 16;
+    const usesSandbox = selectedProblem.language !== 'GDB';
     if (usesSandbox) {
       try {
         const response = await fetch('/api/judge', {
@@ -496,13 +505,10 @@ export default function Home() {
               </section>
 
               <section className="flex min-h-[680px] flex-col overflow-hidden rounded-xl border bg-card shadow-sm">
-                <div className="flex items-center justify-between border-b bg-[#111827] px-4 py-3 text-slate-100"><div className="flex items-center gap-2"><Code2 className="size-4 text-blue-400" /><strong className="text-sm">解答編輯器</strong></div><Badge className="border-white/10 bg-white/10 text-slate-200">{selectedProblem.language}</Badge></div>
-                <div className="relative min-h-[390px] flex-1 bg-[#0d1321]">
-                  <div className="absolute inset-y-0 left-0 w-11 border-r border-white/5 bg-[#0a101c] pt-4 text-right font-mono text-xs leading-6 text-slate-600" aria-hidden="true">{code.split('\n').map((_, index) => <div key={index} className="pr-3">{index + 1}</div>)}</div>
-                  <Textarea value={code} onChange={(event) => { setCode(event.target.value); setResultMode('idle'); setResults([]); }} spellCheck={false} aria-label="程式碼編輯器" className="h-full min-h-[390px] resize-none rounded-none border-0 bg-transparent py-4 pl-14 pr-4 font-mono text-[13px] leading-6 text-slate-100 caret-blue-400 focus-visible:ring-0" />
-                </div>
+                <div className="flex items-center justify-between border-b bg-[#111827] px-4 py-3 text-slate-100"><div className="flex items-center gap-2"><Code2 className="size-4 text-blue-400" /><strong className="text-sm">智慧解答編輯器</strong>{editorNotice && <span className="hidden text-[10px] text-emerald-400 sm:inline">✓ {editorNotice}</span>}</div><div className="flex items-center gap-2"><Badge className="hidden border-white/10 bg-white/10 text-slate-300 sm:inline-flex">自動完成</Badge><Badge className="border-white/10 bg-white/10 text-slate-200">{selectedProblem.language}</Badge></div></div>
+                <Suspense fallback={<div className="grid min-h-[390px] flex-1 place-items-center bg-[#0d1321] text-sm text-slate-400"><span className="flex items-center gap-2"><Loader2 className="size-4 animate-spin" />載入智慧編輯器…</span></div>}><CodeEditor value={code} language={selectedProblem.language} onChange={(value) => { setCode(value); setResultMode('idle'); setResults([]); setJudgeError(''); setEditorNotice(''); }} onRun={() => void evaluate('run')} onSubmit={() => void evaluate('submit')} onSave={saveDraft} /></Suspense>
                 <div className="border-t">
-                  <div className="flex items-center justify-between border-b px-4 py-3"><strong className="flex items-center gap-2 text-sm"><TestTube2 className="size-4 text-primary" />測試結果</strong><span className="text-[10px] text-muted-foreground">{selectedProblem.id <= 16 ? 'Judge0 安全沙箱' : '引導式結構判題'}</span></div>
+                  <div className="flex items-center justify-between border-b px-4 py-3"><strong className="flex items-center gap-2 text-sm"><TestTube2 className="size-4 text-primary" />測試結果</strong><span className="text-[10px] text-muted-foreground">{selectedProblem.language !== 'GDB' ? 'Judge0 安全沙箱' : '引導式結構判題'}</span></div>
                   <div className="min-h-36 p-4">
                     {judgeLoading ? <div className="grid min-h-28 place-items-center text-center"><div><Loader2 className="mx-auto size-6 animate-spin text-primary" /><p className="mt-2 text-sm text-muted-foreground">正在安全沙箱編譯並執行測試…</p></div></div> : judgeError ? <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700 dark:border-rose-900 dark:bg-rose-950/30 dark:text-rose-300"><strong className="flex items-center gap-2"><XCircle className="size-4" />判題未完成</strong><p className="mt-2">{judgeError}</p></div> : resultMode === 'idle' ? <div className="grid min-h-28 place-items-center text-center"><div><TerminalSquare className="mx-auto size-6 text-muted-foreground/50" /><p className="mt-2 text-sm text-muted-foreground">按「執行測試」檢查兩個範例，或提交全部測試。</p></div></div> : <div><div className={`mb-3 flex items-center gap-2 font-bold ${results.every((result) => result.passed) ? 'text-emerald-600' : 'text-rose-600'}`}>{results.every((result) => result.passed) ? <CheckCircle2 className="size-5" /> : <XCircle className="size-5" />}{results.every((result) => result.passed) ? (resultMode === 'submit' ? '全部通過，提交成功！' : '範例測試通過') : '還有測試未通過'}</div><div className="grid gap-2 sm:grid-cols-3">{results.map((result) => <div key={result.label} className={`rounded-lg border p-3 text-xs ${result.passed ? 'border-emerald-200 bg-emerald-50 dark:border-emerald-900 dark:bg-emerald-950/30' : 'border-rose-200 bg-rose-50 dark:border-rose-900 dark:bg-rose-950/30'}`}><div className="flex items-center gap-1 font-bold">{result.passed ? <Check className="size-3.5 text-emerald-600" /> : <XCircle className="size-3.5 text-rose-600" />}{result.label}</div><p className="mt-1 truncate text-muted-foreground">輸入：{result.input}</p><p className="truncate text-muted-foreground">預期：{result.output}</p>{result.actual !== undefined && <p className="truncate text-muted-foreground">實際：{result.actual || '（無輸出）'}</p>}{result.error && <p className="mt-2 line-clamp-3 text-rose-600">{result.error}</p>}</div>)}</div></div>}
                   </div>

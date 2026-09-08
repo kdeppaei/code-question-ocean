@@ -18,6 +18,7 @@ import {
   Database,
   Eye,
   EyeOff,
+  FileCode2,
   Flame,
   House,
   Lightbulb,
@@ -25,10 +26,12 @@ import {
   Loader2,
   Map,
   Moon,
+  Plus,
   Play,
   RotateCcw,
   Search,
   Send,
+  ShieldCheck,
   Star,
   Sun,
   TerminalSquare,
@@ -40,6 +43,8 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Progress } from '@/components/ui/progress';
+import { Textarea } from '@/components/ui/textarea';
+import { AdminPanel, LeaderboardPanel, type SessionInfo } from '@/components/platform-panels';
 import {
   languageMeta,
   lessons,
@@ -53,7 +58,8 @@ import { algorithmTracks } from './drills';
 
 const CodeEditor = lazy(() => import('@/components/code-editor').then((module) => ({ default: module.CodeEditor })));
 
-type View = 'home' | 'problems' | 'workspace' | 'learn' | 'algorithms' | 'progress' | 'favorites';
+type View = 'home' | 'problems' | 'workspace' | 'learn' | 'algorithms' | 'progress' | 'favorites' | 'leaderboard' | 'admin';
+type CodeFile = { id: string; name: string; content: string };
 type RunResult = {
   label: string;
   input: string;
@@ -98,6 +104,7 @@ const navItems: { view: View; label: string; icon: typeof House }[] = [
   { view: 'learn', label: '教學路徑', icon: BookOpen },
   { view: 'algorithms', label: '演算法路線', icon: Map },
   { view: 'progress', label: '學習分析', icon: ChartNoAxesColumnIncreasing },
+  { view: 'leaderboard', label: '排行榜', icon: Trophy },
   { view: 'favorites', label: '收藏題目', icon: Star },
 ];
 
@@ -115,6 +122,25 @@ function normalizeCode(value: string) {
 
 function nextUnique(list: number[], value: number) {
   return list.includes(value) ? list : [...list, value];
+}
+
+const fileExtensions: Record<Language, string> = { C: 'c', 'C++': 'cpp', Python: 'py', SQL: 'sql', GDB: 'gdb' };
+
+function initialFiles(problem: Problem): CodeFile[] {
+  return [{ id: 'main', name: `solution.${fileExtensions[problem.language]}`, content: problem.starter }];
+}
+
+function parseDraft(problem: Problem, value: string | null): CodeFile[] {
+  if (!value) return initialFiles(problem);
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (Array.isArray(parsed) && parsed.every((file) => typeof file?.id === 'string' && typeof file?.name === 'string' && typeof file?.content === 'string')) {
+      return parsed as CodeFile[];
+    }
+  } catch {
+    // Older drafts were stored as plain source code.
+  }
+  return [{ ...initialFiles(problem)[0], content: value }];
 }
 
 function mergeLearningState(local: LearningState, remote: LearningState): LearningState {
@@ -151,9 +177,10 @@ export default function Home() {
   const [view, setView] = useState<View>('home');
   const [selectedProblem, setSelectedProblem] = useState<Problem>(problems[0]);
   const [selectedLesson, setSelectedLesson] = useState<Lesson | null>(null);
-  const [code, setCode] = useState(problems[0].starter);
+  const [files, setFiles] = useState<CodeFile[]>(initialFiles(problems[0]));
+  const [activeFileId, setActiveFileId] = useState('main');
   const [results, setResults] = useState<RunResult[]>([]);
-  const [resultMode, setResultMode] = useState<'idle' | 'run' | 'submit'>('idle');
+  const [resultMode, setResultMode] = useState<'idle' | 'run' | 'submit' | 'custom'>('idle');
   const [search, setSearch] = useState('');
   const [languageFilter, setLanguageFilter] = useState<'全部' | Language>('全部');
   const [difficultyFilter, setDifficultyFilter] = useState<'全部' | Difficulty>('全部');
@@ -169,6 +196,25 @@ export default function Home() {
   const [syncEmail, setSyncEmail] = useState('');
   const [cloudReady, setCloudReady] = useState(false);
   const [editorNotice, setEditorNotice] = useState('');
+  const [customInput, setCustomInput] = useState('');
+  const [session, setSession] = useState<SessionInfo | null>(null);
+  const [customProblems, setCustomProblems] = useState<Problem[]>([]);
+
+  const activeFile = files.find((file) => file.id === activeFileId) || files[0];
+  const code = activeFile?.content || '';
+  const setCode = (value: string) => setFiles((current) => current.map((file) => file.id === activeFileId ? { ...file, content: value } : file));
+  const submissionSource = files.map((file) => file.content).join('\n\n');
+  const allProblems = useMemo(() => [...problems, ...customProblems].sort((a, b) => a.id - b.id), [customProblems]);
+  const visibleNavItems = useMemo(() => session?.isAdmin
+    ? [...navItems, { view: 'admin' as View, label: '題庫管理', icon: ShieldCheck }]
+    : navItems, [session?.isAdmin]);
+
+  const refreshCustomProblems = async () => {
+    const response = await fetch('/api/problems', { headers: { accept: 'application/json' } });
+    if (!response.ok) throw new Error('管理題庫暫時無法載入。');
+    const payload = await response.json() as { problems?: Problem[] };
+    setCustomProblems(payload.problems || []);
+  };
 
   useEffect(() => {
     let active = true;
@@ -211,6 +257,21 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
+    let active = true;
+    Promise.all([
+      fetch('/api/session', { headers: { accept: 'application/json' } }).then((response) => response.json() as Promise<SessionInfo>),
+      fetch('/api/problems', { headers: { accept: 'application/json' } }).then((response) => response.json() as Promise<{ problems?: Problem[] }>),
+    ]).then(([sessionPayload, problemPayload]) => {
+      if (!active) return;
+      setSession(sessionPayload);
+      setCustomProblems(problemPayload.problems || []);
+    }).catch(() => {
+      // The static problem library remains fully usable if optional platform APIs fail.
+    });
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
     if (!hydrated) return;
     localStorage.setItem('codedive-learning-v1', JSON.stringify(learning));
     if (!cloudReady) return;
@@ -242,7 +303,7 @@ export default function Home() {
 
   const filteredProblems = useMemo(() => {
     const query = search.trim().toLowerCase();
-    return problems.filter((problem) => {
+    return allProblems.filter((problem) => {
       const matchesQuery = !query || `${problem.title} ${problem.topic} ${problem.language}`.toLowerCase().includes(query);
       const matchesLanguage = languageFilter === '全部' || problem.language === languageFilter;
       const matchesDifficulty = difficultyFilter === '全部' || problem.difficulty === difficultyFilter;
@@ -250,7 +311,7 @@ export default function Home() {
       const matchesTrack = trackFilter === '全部' || problem.track === trackFilter || Boolean(track?.topics.includes(problem.topic));
       return matchesQuery && matchesLanguage && matchesDifficulty && matchesTrack;
     });
-  }, [search, languageFilter, difficultyFilter, trackFilter]);
+  }, [allProblems, search, languageFilter, difficultyFilter, trackFilter]);
 
   const pageSize = 25;
   const problemPageCount = Math.max(1, Math.ceil(filteredProblems.length / pageSize));
@@ -259,7 +320,9 @@ export default function Home() {
   const openProblem = (problem: Problem) => {
     setSelectedProblem(problem);
     const savedDraft = localStorage.getItem(`codedive-draft-${problem.id}`);
-    setCode(savedDraft || problem.starter);
+    const nextFiles = parseDraft(problem, savedDraft);
+    setFiles(nextFiles);
+    setActiveFileId(nextFiles[0].id);
     setResults([]);
     setResultMode('idle');
     setShowSolution(false);
@@ -270,8 +333,8 @@ export default function Home() {
   };
 
   const quickStart = () => {
-    const unsolved = problems.filter((problem) => !learning.solved.includes(problem.id));
-    const pool = unsolved.length ? unsolved : problems;
+    const unsolved = allProblems.filter((problem) => !learning.solved.includes(problem.id));
+    const pool = unsolved.length ? unsolved : allProblems;
     openProblem(pool[Math.floor(Math.random() * pool.length)]);
   };
 
@@ -292,8 +355,25 @@ export default function Home() {
   };
 
   const saveDraft = () => {
-    localStorage.setItem(`codedive-draft-${selectedProblem.id}`, code);
+    localStorage.setItem(`codedive-draft-${selectedProblem.id}`, JSON.stringify(files));
     setEditorNotice('草稿已儲存在這台裝置');
+  };
+
+  const addFile = () => {
+    const nextNumber = files.length + 1;
+    const id = `${Date.now()}-${nextNumber}`;
+    setFiles((current) => [...current, { id, name: `helper${nextNumber}.${fileExtensions[selectedProblem.language]}`, content: '' }]);
+    setActiveFileId(id);
+    setEditorNotice('已新增檔案；執行時會依分頁順序合併');
+  };
+
+  const removeFile = (id: string) => {
+    if (files.length <= 1) return;
+    const next = files.filter((file) => file.id !== id);
+    setFiles(next);
+    if (activeFileId === id) setActiveFileId(next[0].id);
+    setResults([]);
+    setResultMode('idle');
   };
 
   const recordSubmission = (passed: boolean) => {
@@ -314,16 +394,16 @@ export default function Home() {
     });
   };
 
-  const evaluate = async (mode: 'run' | 'submit') => {
+  const evaluate = async (mode: 'run' | 'submit' | 'custom') => {
     setJudgeError('');
     setJudgeLoading(true);
-    const usesSandbox = selectedProblem.language !== 'GDB';
+    const usesSandbox = selectedProblem.language !== 'GDB' && selectedProblem.id < 1000;
     if (usesSandbox) {
       try {
         const response = await fetch('/api/judge', {
           method: 'POST',
           headers: { 'content-type': 'application/json', accept: 'application/json' },
-          body: JSON.stringify({ problemId: selectedProblem.id, source: code, mode }),
+          body: JSON.stringify({ problemId: selectedProblem.id, source: submissionSource, mode, customInput: mode === 'custom' ? customInput : undefined }),
         });
         const payload = await response.json() as { results?: RunResult[]; error?: string };
         if (!response.ok || !payload.results) throw new Error(payload.error || '安全判題服務暫時無法使用。');
@@ -339,7 +419,12 @@ export default function Home() {
       return;
     }
 
-    const normalized = normalizeCode(code);
+    if (mode === 'custom') {
+      setJudgeError('自訂輸入目前支援內建安全沙箱題；這題請使用範例測試。');
+      setJudgeLoading(false);
+      return;
+    }
+    const normalized = normalizeCode(submissionSource);
     const checks = mode === 'run' ? selectedProblem.checks.slice(0, 2) : selectedProblem.checks;
     const evaluated = checks.map((check) => ({
       label: check.label,
@@ -370,7 +455,7 @@ export default function Home() {
           <span><span className="block text-[10px] font-black tracking-[.18em] text-primary">CODEDIVE</span><strong className="block text-base">程式題海</strong></span>
         </button>
         <nav className="mt-7 grid gap-1" aria-label="主要導覽">
-          {navItems.map(({ view: itemView, label, icon: Icon }) => (
+          {visibleNavItems.map(({ view: itemView, label, icon: Icon }) => (
             <Button key={itemView} variant="ghost" onClick={() => changeView(itemView)} className={`h-11 justify-start gap-3 px-3 ${view === itemView || (view === 'workspace' && itemView === 'problems') ? 'bg-primary/10 text-primary hover:bg-primary/15 hover:text-primary' : 'text-muted-foreground'}`}>
               <Icon className="size-[18px]" />{label}
               {itemView === 'favorites' && learning.favorites.length > 0 && <span className="ml-auto rounded-full bg-secondary px-2 py-0.5 text-[10px]">{learning.favorites.length}</span>}
@@ -400,7 +485,7 @@ export default function Home() {
             </div>
             <div className="hidden min-w-0 lg:block">
               <p className="text-[11px] font-bold text-primary">{displayDate}</p>
-              <strong className="block truncate text-lg">{view === 'workspace' ? `${selectedProblem.id}. ${selectedProblem.title}` : navItems.find((item) => item.view === view)?.label || '程式題海'}</strong>
+              <strong className="block truncate text-lg">{view === 'workspace' ? `${selectedProblem.id}. ${selectedProblem.title}` : visibleNavItems.find((item) => item.view === view)?.label || '程式題海'}</strong>
             </div>
             <div className="ml-auto flex items-center gap-2">
               <span className="hidden items-center gap-1.5 text-xs text-muted-foreground md:flex">
@@ -408,6 +493,8 @@ export default function Home() {
                 {syncState === 'synced' ? '已同步' : syncState === 'saving' ? '同步中' : '本機模式'}
               </span>
               <Button variant="outline" className="hidden h-9 gap-2 sm:flex" onClick={quickStart}><Play className="size-4" />隨機一題</Button>
+              {session && !session.authenticated && <a className="hidden h-9 items-center rounded-lg bg-primary px-4 text-xs font-bold text-primary-foreground sm:flex" href={session.signInPath} target="_top">登入同步</a>}
+              {session?.authenticated && <button className="hidden max-w-36 truncate text-xs font-bold text-muted-foreground hover:text-primary md:block" onClick={() => changeView('leaderboard')} title={session.user?.email}>{session.user?.name || '我的帳號'}</button>}
               <Button aria-label="切換深色模式" variant="outline" size="icon-lg" onClick={toggleTheme}>{dark ? <Sun /> : <Moon />}</Button>
             </div>
           </div>
@@ -434,8 +521,8 @@ export default function Home() {
 
             <section className="grid grid-cols-2 gap-3 lg:grid-cols-4">
               {[
-                ['題庫總量', `${problems.length}`, '五個專項'],
-                ['已解決', `${learning.solved.length}`, `完成 ${Math.round((learning.solved.length / problems.length) * 100)}%`],
+                ['題庫總量', `${allProblems.length}`, '五個專項'],
+                ['已解決', `${learning.solved.length}`, `完成 ${Math.round((learning.solved.length / allProblems.length) * 100)}%`],
                 ['提交正確率', `${accuracy}%`, `${learning.submissions} 次提交`],
                 ['待複習', `${learning.wrong.length}`, '來自未通過題目'],
               ].map(([label, value, foot]) => <article key={label} className="rounded-xl border bg-card p-4 shadow-sm md:p-5"><span className="text-xs font-bold text-muted-foreground">{label}</span><strong className="mt-2 block font-mono text-2xl font-black md:text-3xl">{value}</strong><span className="mt-1 block text-[11px] text-muted-foreground">{foot}</span></article>)}
@@ -447,8 +534,8 @@ export default function Home() {
                 {(Object.keys(languageMeta) as Language[]).map((language) => {
                   const meta = languageMeta[language];
                   const Icon = languageIcons[language];
-                  const total = problems.filter((problem) => problem.language === language).length;
-                  const solved = problems.filter((problem) => problem.language === language && learning.solved.includes(problem.id)).length;
+                  const total = allProblems.filter((problem) => problem.language === language).length;
+                  const solved = allProblems.filter((problem) => problem.language === language && learning.solved.includes(problem.id)).length;
                   return <button key={language} onClick={() => { setLanguageFilter(language); setProblemPage(1); changeView('problems'); }} className="group rounded-2xl border bg-card p-4 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md md:p-5"><span className="mb-5 grid size-11 place-items-center rounded-xl" style={{ background: meta.soft, color: meta.color }}><Icon className="size-5" /></span><div className="flex items-center justify-between"><strong className="text-lg">{language}</strong><span className="font-mono text-[10px] text-muted-foreground">{solved}/{total}</span></div><p className="mt-1 min-h-10 text-xs leading-5 text-muted-foreground">{meta.description}</p><div className="mt-4 h-1.5 overflow-hidden rounded-full bg-secondary"><div className="h-full rounded-full transition-all" style={{ width: `${total ? solved / total * 100 : 0}%`, background: meta.color }} /></div></button>;
                 })}
               </div>
@@ -457,7 +544,7 @@ export default function Home() {
             <section className="grid gap-5 xl:grid-cols-[1.35fr_.65fr]">
               <div className="rounded-2xl border bg-card shadow-sm">
                 <div className="flex items-center justify-between border-b p-5"><div><h2 className="font-black">建議下一題</h2><p className="mt-1 text-xs text-muted-foreground">依尚未完成的題目推薦</p></div><Button variant="ghost" size="sm" onClick={() => changeView('problems')}>瀏覽題庫</Button></div>
-                <div className="divide-y">{problems.filter((p) => !learning.solved.includes(p.id)).slice(0, 4).map((problem) => <ProblemRow key={problem.id} problem={problem} learning={learning} onOpen={openProblem} />)}</div>
+                <div className="divide-y">{allProblems.filter((p) => !learning.solved.includes(p.id)).slice(0, 4).map((problem) => <ProblemRow key={problem.id} problem={problem} learning={learning} onOpen={openProblem} />)}</div>
               </div>
               <aside className="rounded-2xl border bg-[#edf6ff] p-6 text-[#17365d] shadow-sm dark:bg-blue-950/40 dark:text-blue-100">
                 <div className="flex items-center gap-2 text-xs font-black tracking-[.12em] text-primary"><BookOpen className="size-4" />LEARN → PRACTICE</div>
@@ -472,7 +559,7 @@ export default function Home() {
 
         {view === 'problems' && (
           <div className="mx-auto max-w-[1380px] space-y-6 p-4 md:p-7">
-            <PageTitle eyebrow="PROBLEM SET" title="選一題，開始解題" copy="200 題依語言、難度與演算法路線整理；每題都能直接顯示解答。" />
+            <PageTitle eyebrow="PROBLEM SET" title="選一題，開始解題" copy={`${allProblems.length} 題依語言、難度與演算法路線整理；每題都能直接顯示解答。`} />
             {trackFilter !== '全部' && <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-primary/20 bg-primary/5 px-4 py-3"><div><span className="text-xs font-black text-primary">目前路線</span><strong className="ml-2 text-sm">{trackFilter}</strong></div><Button variant="ghost" size="sm" onClick={() => { setTrackFilter('全部'); setProblemPage(1); }}>清除路線篩選</Button></div>}
             <div className="grid gap-3 rounded-2xl border bg-card p-4 shadow-sm md:grid-cols-[minmax(0,1fr)_auto_auto]">
               <div className="relative"><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" /><Input value={search} onChange={(event) => { setSearch(event.target.value); setProblemPage(1); }} placeholder="搜尋題目或主題…" className="h-10 pl-9" aria-label="搜尋題目" /></div>
@@ -491,7 +578,7 @@ export default function Home() {
           <div className="mx-auto max-w-[1600px] p-3 md:p-4">
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border bg-card p-2 shadow-sm">
               <Button variant="ghost" className="gap-2" onClick={() => changeView('problems')}><ArrowLeft />返回題庫</Button>
-              <div className="flex items-center gap-1"><Button variant="ghost" size="icon" aria-label="收藏題目" onClick={() => toggleFavorite(selectedProblem.id)}><Star className={learning.favorites.includes(selectedProblem.id) ? 'fill-amber-400 text-amber-500' : ''} /></Button><Button variant="ghost" size="sm" onClick={() => { const index = problems.findIndex((problem) => problem.id === selectedProblem.id); openProblem(problems[(index + 1) % problems.length]); }}>下一題 <ChevronRight /></Button></div>
+              <div className="flex items-center gap-1"><Button variant="ghost" size="icon" aria-label="收藏題目" onClick={() => toggleFavorite(selectedProblem.id)}><Star className={learning.favorites.includes(selectedProblem.id) ? 'fill-amber-400 text-amber-500' : ''} /></Button><Button variant="ghost" size="sm" onClick={() => { const index = allProblems.findIndex((problem) => problem.id === selectedProblem.id); openProblem(allProblems[(index + 1) % allProblems.length]); }}>下一題 <ChevronRight /></Button></div>
             </div>
             <div className="grid min-h-[calc(100vh-145px)] gap-3 xl:grid-cols-[.88fr_1.12fr]">
               <section className="overflow-hidden rounded-xl border bg-card shadow-sm">
@@ -506,14 +593,23 @@ export default function Home() {
 
               <section className="flex min-h-[680px] flex-col overflow-hidden rounded-xl border bg-card shadow-sm">
                 <div className="flex items-center justify-between border-b bg-[#111827] px-4 py-3 text-slate-100"><div className="flex items-center gap-2"><Code2 className="size-4 text-blue-400" /><strong className="text-sm">智慧解答編輯器</strong>{editorNotice && <span className="hidden text-[10px] text-emerald-400 sm:inline">✓ {editorNotice}</span>}</div><div className="flex items-center gap-2"><Badge className="hidden border-white/10 bg-white/10 text-slate-300 sm:inline-flex">自動完成</Badge><Badge className="border-white/10 bg-white/10 text-slate-200">{selectedProblem.language}</Badge></div></div>
+                <div className="flex items-center gap-1 overflow-x-auto border-b border-slate-700 bg-[#0d1321] px-2 pt-2 text-slate-300">
+                  {files.map((file) => <div key={file.id} className={`flex shrink-0 items-center rounded-t-lg border border-b-0 ${file.id === activeFileId ? 'border-slate-600 bg-[#111827] text-white' : 'border-transparent bg-slate-900/50'}`}><button className="flex items-center gap-1.5 px-3 py-2 font-mono text-[11px]" onClick={() => setActiveFileId(file.id)}><FileCode2 className="size-3.5" />{file.name}</button>{files.length > 1 && <button className="mr-1 rounded p-1 text-slate-500 hover:bg-white/10 hover:text-white" aria-label={`刪除 ${file.name}`} onClick={() => removeFile(file.id)}>×</button>}</div>)}
+                  <button className="mb-1 grid size-8 shrink-0 place-items-center rounded-lg text-slate-400 hover:bg-white/10 hover:text-white" aria-label="新增檔案" onClick={addFile}><Plus className="size-4" /></button>
+                </div>
                 <Suspense fallback={<div className="grid min-h-[390px] flex-1 place-items-center bg-[#0d1321] text-sm text-slate-400"><span className="flex items-center gap-2"><Loader2 className="size-4 animate-spin" />載入智慧編輯器…</span></div>}><CodeEditor value={code} language={selectedProblem.language} onChange={(value) => { setCode(value); setResultMode('idle'); setResults([]); setJudgeError(''); setEditorNotice(''); }} onRun={() => void evaluate('run')} onSubmit={() => void evaluate('submit')} onSave={saveDraft} /></Suspense>
+                <details className="border-t bg-secondary/20 px-4 py-3">
+                  <summary className="cursor-pointer text-xs font-bold text-primary">自訂測試輸入</summary>
+                  <div className="mt-3 flex flex-col gap-2 sm:flex-row"><Textarea value={customInput} onChange={(event) => setCustomInput(event.target.value)} className="min-h-20 flex-1 font-mono text-xs" maxLength={10000} placeholder="輸入傳給題目測試包裝器的 stdin…" aria-label="自訂測試輸入" /><Button variant="outline" className="gap-2 self-end" disabled={judgeLoading || selectedProblem.language === 'GDB' || selectedProblem.id >= 1000} onClick={() => void evaluate('custom')}><Play />執行自訂測試</Button></div>
+                  {(selectedProblem.language === 'GDB' || selectedProblem.id >= 1000) && <p className="mt-2 text-[11px] text-muted-foreground">管理題與 GDB 題採結構判題，請使用內建範例測試。</p>}
+                </details>
                 <div className="border-t">
-                  <div className="flex items-center justify-between border-b px-4 py-3"><strong className="flex items-center gap-2 text-sm"><TestTube2 className="size-4 text-primary" />測試結果</strong><span className="text-[10px] text-muted-foreground">{selectedProblem.language !== 'GDB' ? 'Judge0 安全沙箱' : '引導式結構判題'}</span></div>
+                  <div className="flex items-center justify-between border-b px-4 py-3"><strong className="flex items-center gap-2 text-sm"><TestTube2 className="size-4 text-primary" />測試結果</strong><span className="text-[10px] text-muted-foreground">{selectedProblem.language !== 'GDB' && selectedProblem.id < 1000 ? 'Judge0 安全沙箱' : '引導式結構判題'}</span></div>
                   <div className="min-h-36 p-4">
-                    {judgeLoading ? <div className="grid min-h-28 place-items-center text-center"><div><Loader2 className="mx-auto size-6 animate-spin text-primary" /><p className="mt-2 text-sm text-muted-foreground">正在安全沙箱編譯並執行測試…</p></div></div> : judgeError ? <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700 dark:border-rose-900 dark:bg-rose-950/30 dark:text-rose-300"><strong className="flex items-center gap-2"><XCircle className="size-4" />判題未完成</strong><p className="mt-2">{judgeError}</p></div> : resultMode === 'idle' ? <div className="grid min-h-28 place-items-center text-center"><div><TerminalSquare className="mx-auto size-6 text-muted-foreground/50" /><p className="mt-2 text-sm text-muted-foreground">按「執行測試」檢查兩個範例，或提交全部測試。</p></div></div> : <div><div className={`mb-3 flex items-center gap-2 font-bold ${results.every((result) => result.passed) ? 'text-emerald-600' : 'text-rose-600'}`}>{results.every((result) => result.passed) ? <CheckCircle2 className="size-5" /> : <XCircle className="size-5" />}{results.every((result) => result.passed) ? (resultMode === 'submit' ? '全部通過，提交成功！' : '範例測試通過') : '還有測試未通過'}</div><div className="grid gap-2 sm:grid-cols-3">{results.map((result) => <div key={result.label} className={`rounded-lg border p-3 text-xs ${result.passed ? 'border-emerald-200 bg-emerald-50 dark:border-emerald-900 dark:bg-emerald-950/30' : 'border-rose-200 bg-rose-50 dark:border-rose-900 dark:bg-rose-950/30'}`}><div className="flex items-center gap-1 font-bold">{result.passed ? <Check className="size-3.5 text-emerald-600" /> : <XCircle className="size-3.5 text-rose-600" />}{result.label}</div><p className="mt-1 truncate text-muted-foreground">輸入：{result.input}</p><p className="truncate text-muted-foreground">預期：{result.output}</p>{result.actual !== undefined && <p className="truncate text-muted-foreground">實際：{result.actual || '（無輸出）'}</p>}{result.error && <p className="mt-2 line-clamp-3 text-rose-600">{result.error}</p>}</div>)}</div></div>}
+                    {judgeLoading ? <div className="grid min-h-28 place-items-center text-center"><div><Loader2 className="mx-auto size-6 animate-spin text-primary" /><p className="mt-2 text-sm text-muted-foreground">正在安全沙箱編譯並執行測試…</p></div></div> : judgeError ? <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700 dark:border-rose-900 dark:bg-rose-950/30 dark:text-rose-300"><strong className="flex items-center gap-2"><XCircle className="size-4" />判題未完成</strong><p className="mt-2">{judgeError}</p></div> : resultMode === 'idle' ? <div className="grid min-h-28 place-items-center text-center"><div><TerminalSquare className="mx-auto size-6 text-muted-foreground/50" /><p className="mt-2 text-sm text-muted-foreground">按「執行測試」檢查兩個範例，或提交全部測試。</p></div></div> : <div><div className={`mb-3 flex items-center gap-2 font-bold ${results.every((result) => result.passed) ? 'text-emerald-600' : 'text-rose-600'}`}>{results.every((result) => result.passed) ? <CheckCircle2 className="size-5" /> : <XCircle className="size-5" />}{results.every((result) => result.passed) ? (resultMode === 'submit' ? '全部通過，提交成功！' : resultMode === 'custom' ? '自訂測試執行完成' : '範例測試通過') : '還有測試未通過'}</div><div className="grid gap-2 sm:grid-cols-3">{results.map((result) => <div key={result.label} className={`rounded-lg border p-3 text-xs ${result.passed ? 'border-emerald-200 bg-emerald-50 dark:border-emerald-900 dark:bg-emerald-950/30' : 'border-rose-200 bg-rose-50 dark:border-rose-900 dark:bg-rose-950/30'}`}><div className="flex items-center gap-1 font-bold">{result.passed ? <Check className="size-3.5 text-emerald-600" /> : <XCircle className="size-3.5 text-rose-600" />}{result.label}</div><p className="mt-1 truncate text-muted-foreground">輸入：{result.input}</p><p className="truncate text-muted-foreground">預期：{result.output}</p>{result.actual !== undefined && <p className="truncate text-muted-foreground">實際：{result.actual || '（無輸出）'}</p>}{result.error && <p className="mt-2 line-clamp-3 text-rose-600">{result.error}</p>}</div>)}</div></div>}
                   </div>
                 </div>
-                <div className="flex flex-wrap items-center justify-between gap-2 border-t bg-secondary/30 p-3"><div className="flex flex-wrap gap-2"><Button variant="ghost" className="gap-2 text-muted-foreground" onClick={() => { setCode(selectedProblem.starter); setResults([]); setResultMode('idle'); setJudgeError(''); }}><RotateCcw />重設</Button><Button variant="outline" className="gap-2" onClick={() => setShowSolution((visible) => !visible)}>{showSolution ? <EyeOff /> : <Eye />}{showSolution ? '隱藏解答' : '顯示解答'}</Button></div><div className="flex gap-2"><Button variant="outline" className="gap-2" disabled={judgeLoading} onClick={() => void evaluate('run')}>{judgeLoading ? <Loader2 className="animate-spin" /> : <Play />}執行測試</Button><Button className="gap-2 bg-emerald-600 hover:bg-emerald-700" disabled={judgeLoading} onClick={() => void evaluate('submit')}>{judgeLoading ? <Loader2 className="animate-spin" /> : <Send />}提交解答</Button></div></div>
+                <div className="flex flex-wrap items-center justify-between gap-2 border-t bg-secondary/30 p-3"><div className="flex flex-wrap gap-2"><Button variant="ghost" className="gap-2 text-muted-foreground" onClick={() => { const resetFiles = initialFiles(selectedProblem); setFiles(resetFiles); setActiveFileId(resetFiles[0].id); setResults([]); setResultMode('idle'); setJudgeError(''); }}><RotateCcw />重設</Button><Button variant="outline" className="gap-2" onClick={() => setShowSolution((visible) => !visible)}>{showSolution ? <EyeOff /> : <Eye />}{showSolution ? '隱藏解答' : '顯示解答'}</Button></div><div className="flex gap-2"><Button variant="outline" className="gap-2" disabled={judgeLoading} onClick={() => void evaluate('run')}>{judgeLoading ? <Loader2 className="animate-spin" /> : <Play />}執行測試</Button><Button className="gap-2 bg-emerald-600 hover:bg-emerald-700" disabled={judgeLoading} onClick={() => void evaluate('submit')}>{judgeLoading ? <Loader2 className="animate-spin" /> : <Send />}提交解答</Button></div></div>
               </section>
             </div>
 
@@ -524,7 +620,7 @@ export default function Home() {
 
         {view === 'learn' && (
           <div className="mx-auto max-w-[1380px] p-4 md:p-7">
-            {selectedLesson ? <LessonArticle lesson={selectedLesson} onBack={() => setSelectedLesson(null)} onPractice={(id) => openProblem(problems.find((problem) => problem.id === id) || problems[0])} /> : <>
+            {selectedLesson ? <LessonArticle lesson={selectedLesson} onBack={() => setSelectedLesson(null)} onPractice={(id) => openProblem(allProblems.find((problem) => problem.id === id) || allProblems[0])} /> : <>
               <PageTitle eyebrow="LEARNING PATHS" title="短篇教學，讀完立刻練" copy="內容採小章節設計，像 W3Schools 一樣容易查閱；每章都連到一題可動手驗證的練習。" />
               <div className="mt-7 space-y-8">{(Object.keys(languageMeta) as Language[]).map((language) => { const meta = languageMeta[language]; const Icon = languageIcons[language]; return <section key={language}><div className="mb-3 flex items-center gap-3"><span className="grid size-10 place-items-center rounded-xl" style={{ background: meta.soft, color: meta.color }}><Icon className="size-5" /></span><div><h2 className="text-lg font-black">{language} 學習路徑</h2><p className="text-xs text-muted-foreground">{meta.description}</p></div></div><div className="grid gap-3 md:grid-cols-3">{lessons.filter((lesson) => lesson.language === language).map((lesson, index) => <button key={lesson.id} onClick={() => setSelectedLesson(lesson)} className="group rounded-2xl border bg-card p-5 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md"><div className="flex items-center justify-between"><span className="font-mono text-xs font-black text-primary">{String(index + 1).padStart(2, '0')}</span><span className="rounded-full bg-secondary px-2 py-1 text-[10px] font-bold text-muted-foreground">{lesson.level} · {lesson.minutes} 分鐘</span></div><h3 className="mt-5 text-lg font-black group-hover:text-primary">{lesson.title}</h3><p className="mt-2 min-h-12 text-sm leading-6 text-muted-foreground">{lesson.description}</p><span className="mt-5 flex items-center gap-1 text-xs font-bold text-primary">開始閱讀 <ChevronRight className="size-3" /></span></button>)}</div></section>; })}</div>
             </>}
@@ -536,7 +632,7 @@ export default function Home() {
             <PageTitle eyebrow="ALGORITHM ROADMAP" title="從基礎資料結構，一路練到實戰" copy="依主題安排練習順序。先讀懂觀念，再進入對應題組反覆演練。" />
             <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
               {algorithmTracks.map((track, index) => {
-                const trackProblems = problems.filter((problem) => problem.track === track.title || track.topics.includes(problem.topic));
+                const trackProblems = allProblems.filter((problem) => problem.track === track.title || track.topics.includes(problem.topic));
                 const solved = trackProblems.filter((problem) => learning.solved.includes(problem.id)).length;
                 const percent = trackProblems.length ? Math.round((solved / trackProblems.length) * 100) : 0;
                 return <button key={track.id} onClick={() => { setTrackFilter(track.title); setSearch(''); setLanguageFilter('全部'); setDifficultyFilter('全部'); setProblemPage(1); changeView('problems'); }} className="group rounded-2xl border bg-card p-5 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md md:p-6"><div className="flex items-start justify-between"><span className="grid size-11 place-items-center rounded-xl font-mono text-sm font-black text-white" style={{ background: track.color }}>{String(index + 1).padStart(2, '0')}</span><Badge variant="outline">{trackProblems.length} 題</Badge></div><h2 className="mt-5 text-xl font-black group-hover:text-primary">{track.title}</h2><p className="mt-2 min-h-12 text-sm leading-6 text-muted-foreground">{track.description}</p><div className="mt-5 flex items-center justify-between text-xs"><span className="text-muted-foreground">完成 {solved} / {trackProblems.length}</span><strong style={{ color: track.color }}>{percent}%</strong></div><div className="mt-2 h-1.5 overflow-hidden rounded-full bg-secondary"><div className="h-full rounded-full transition-all" style={{ width: `${percent}%`, background: track.color }} /></div><span className="mt-5 flex items-center gap-1 text-xs font-bold text-primary">開啟題組 <ChevronRight className="size-3" /></span></button>;
@@ -556,8 +652,8 @@ export default function Home() {
               { label: '收藏', value: learning.favorites.length, icon: Star, color: 'text-violet-600' },
             ].map(({ label, value, icon: Icon, color }) => <article key={label} className="rounded-2xl border bg-card p-5 shadow-sm"><Icon className={`size-5 ${color}`} /><span className="mt-5 block text-xs font-bold text-muted-foreground">{label}</span><strong className="mt-1 block font-mono text-3xl font-black">{value}</strong></article>)}</section>
             <section className="grid gap-5 lg:grid-cols-[1fr_.8fr]">
-              <article className="rounded-2xl border bg-card p-5 shadow-sm md:p-6"><h2 className="font-black">各專項完成度</h2><div className="mt-6 space-y-5">{(Object.keys(languageMeta) as Language[]).map((language) => { const meta = languageMeta[language]; const total = problems.filter((problem) => problem.language === language).length; const solved = problems.filter((problem) => problem.language === language && learning.solved.includes(problem.id)).length; return <div key={language}><div className="mb-2 flex items-center justify-between text-sm"><strong>{language}</strong><span className="font-mono text-xs text-muted-foreground">{solved} / {total}</span></div><div className="h-2 overflow-hidden rounded-full bg-secondary"><div className="h-full rounded-full" style={{ width: `${solved / total * 100}%`, background: meta.color }} /></div></div>; })}</div></article>
-              <article className="rounded-2xl border bg-card shadow-sm"><div className="border-b p-5"><h2 className="font-black">最近提交</h2></div>{learning.history.length ? <div className="divide-y">{learning.history.slice(0, 7).map((item, index) => { const problem = problems.find((p) => p.id === item.id)!; return <button key={`${item.at}-${index}`} onClick={() => openProblem(problem)} className="flex w-full items-center gap-3 px-5 py-3 text-left hover:bg-secondary/50"><span className={`grid size-7 place-items-center rounded-full ${item.passed ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>{item.passed ? <Check className="size-4" /> : <XCircle className="size-4" />}</span><span className="min-w-0 flex-1"><strong className="block truncate text-sm">{problem.id}. {problem.title}</strong><span className="text-[10px] text-muted-foreground">{new Intl.DateTimeFormat('zh-TW', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(item.at))}</span></span><ChevronRight className="size-4 text-muted-foreground" /></button>; })}</div> : <div className="p-10 text-center text-sm text-muted-foreground">提交解答後，紀錄會出現在這裡。</div>}</article>
+              <article className="rounded-2xl border bg-card p-5 shadow-sm md:p-6"><h2 className="font-black">各專項完成度</h2><div className="mt-6 space-y-5">{(Object.keys(languageMeta) as Language[]).map((language) => { const meta = languageMeta[language]; const total = allProblems.filter((problem) => problem.language === language).length; const solved = allProblems.filter((problem) => problem.language === language && learning.solved.includes(problem.id)).length; return <div key={language}><div className="mb-2 flex items-center justify-between text-sm"><strong>{language}</strong><span className="font-mono text-xs text-muted-foreground">{solved} / {total}</span></div><div className="h-2 overflow-hidden rounded-full bg-secondary"><div className="h-full rounded-full" style={{ width: `${total ? solved / total * 100 : 0}%`, background: meta.color }} /></div></div>; })}</div></article>
+              <article className="rounded-2xl border bg-card shadow-sm"><div className="border-b p-5"><h2 className="font-black">最近提交</h2></div>{learning.history.length ? <div className="divide-y">{learning.history.slice(0, 7).map((item, index) => { const problem = allProblems.find((p) => p.id === item.id); if (!problem) return null; return <button key={`${item.at}-${index}`} onClick={() => openProblem(problem)} className="flex w-full items-center gap-3 px-5 py-3 text-left hover:bg-secondary/50"><span className={`grid size-7 place-items-center rounded-full ${item.passed ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>{item.passed ? <Check className="size-4" /> : <XCircle className="size-4" />}</span><span className="min-w-0 flex-1"><strong className="block truncate text-sm">{problem.id}. {problem.title}</strong><span className="text-[10px] text-muted-foreground">{new Intl.DateTimeFormat('zh-TW', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(item.at))}</span></span><ChevronRight className="size-4 text-muted-foreground" /></button>; })}</div> : <div className="p-10 text-center text-sm text-muted-foreground">提交解答後，紀錄會出現在這裡。</div>}</article>
             </section>
           </div>
         )}
@@ -565,13 +661,21 @@ export default function Home() {
         {view === 'favorites' && (
           <div className="mx-auto max-w-[1180px] space-y-6 p-4 md:p-7">
             <PageTitle eyebrow="SAVED PROBLEMS" title="收藏題目" copy="把想重做或稍後研究的題目集中在這裡。" />
-            <div className="overflow-hidden rounded-2xl border bg-card shadow-sm">{learning.favorites.length ? <div className="divide-y">{problems.filter((problem) => learning.favorites.includes(problem.id)).map((problem) => <ProblemRow key={problem.id} problem={problem} learning={learning} onOpen={openProblem} detailed />)}</div> : <div className="p-16 text-center"><Star className="mx-auto size-9 text-muted-foreground/40" /><strong className="mt-4 block">還沒有收藏題目</strong><p className="mt-1 text-sm text-muted-foreground">在解題頁按星號，就能把題目收進這裡。</p><Button className="mt-5" onClick={() => changeView('problems')}>前往題庫</Button></div>}</div>
+            <div className="overflow-hidden rounded-2xl border bg-card shadow-sm">{learning.favorites.length ? <div className="divide-y">{allProblems.filter((problem) => learning.favorites.includes(problem.id)).map((problem) => <ProblemRow key={problem.id} problem={problem} learning={learning} onOpen={openProblem} detailed />)}</div> : <div className="p-16 text-center"><Star className="mx-auto size-9 text-muted-foreground/40" /><strong className="mt-4 block">還沒有收藏題目</strong><p className="mt-1 text-sm text-muted-foreground">在解題頁按星號，就能把題目收進這裡。</p><Button className="mt-5" onClick={() => changeView('problems')}>前往題庫</Button></div>}</div>
           </div>
+        )}
+
+        {view === 'leaderboard' && (
+          <div className="mx-auto max-w-[1180px] space-y-6 p-4 md:p-7"><PageTitle eyebrow="COMMUNITY" title="程式題海排行榜" copy="公開顯示自願加入者的完成題數與正確率；Email 永不公開。" /><LeaderboardPanel session={session} /></div>
+        )}
+
+        {view === 'admin' && session?.isAdmin && (
+          <div className="mx-auto max-w-[1380px] space-y-6 p-4 md:p-7"><PageTitle eyebrow="ADMIN" title="題庫管理後台" copy="以 JSON 批次驗證、匯入、更新或停用自訂題目。" /><AdminPanel problems={customProblems} onChanged={refreshCustomProblems} /></div>
         )}
       </main>
 
-      <nav className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-6 border-t bg-card/95 px-1 pb-[env(safe-area-inset-bottom)] backdrop-blur-xl lg:hidden" aria-label="行動版導覽">
-        {navItems.map(({ view: itemView, label, icon: Icon }) => <button key={itemView} onClick={() => changeView(itemView)} className={`flex min-h-16 flex-col items-center justify-center gap-1 text-[10px] font-bold ${view === itemView || (view === 'workspace' && itemView === 'problems') ? 'text-primary' : 'text-muted-foreground'}`}><Icon className="size-5" />{label}</button>)}
+      <nav className="fixed inset-x-0 bottom-0 z-40 flex overflow-x-auto border-t bg-card/95 px-1 pb-[env(safe-area-inset-bottom)] backdrop-blur-xl lg:hidden" aria-label="行動版導覽">
+        {visibleNavItems.map(({ view: itemView, label, icon: Icon }) => <button key={itemView} onClick={() => changeView(itemView)} className={`flex min-h-16 min-w-[72px] flex-1 flex-col items-center justify-center gap-1 text-[10px] font-bold ${view === itemView || (view === 'workspace' && itemView === 'problems') ? 'text-primary' : 'text-muted-foreground'}`}><Icon className="size-5" />{label}</button>)}
       </nav>
     </div>
   );

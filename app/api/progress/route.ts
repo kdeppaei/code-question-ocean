@@ -80,5 +80,13 @@ export async function PUT(request: Request) {
       updated_at = excluded.updated_at
   `).bind(user.userId, user.email, serialized, updatedAt).run();
 
+  const progress = state as Record<string, unknown>;
+  const solvedCount = Array.isArray(progress.solved) ? progress.solved.length : 0;
+  await db.prepare(`
+    UPDATE leaderboard_profiles
+    SET solved_count = ?, successful = ?, submissions = ?, updated_at = ?
+    WHERE user_id = ?
+  `).bind(solvedCount, Number(progress.successful), Number(progress.submissions), updatedAt, user.userId).run();
+
   return Response.json({ ok: true, updatedAt, user: { email: user.email } });
 }

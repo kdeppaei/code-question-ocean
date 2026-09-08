@@ -1,0 +1,2 @@
+CREATE INDEX `idx_custom_problems_active_updated` ON `custom_problems` (`active`,`updated_at`);--> statement-breakpoint
+CREATE INDEX `idx_leaderboard_public_score` ON `leaderboard_profiles` (`is_public`,`solved_count`,`successful`,`updated_at`);

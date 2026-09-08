@@ -1,5 +1,7 @@
 import { env } from 'cloudflare:workers';
 import { generatedJudgeDefinitions } from '@/lib/generated-judge-definitions';
+import { getRequestIdentity } from '@/lib/auth';
+import { ensureProgressSchema } from '@/lib/db';
 
 export const dynamic = 'force-dynamic';
 
@@ -105,16 +107,87 @@ function normalizeOutput(value: string | null | undefined) {
   return (value || '').replace(/\r/g, '').trim().replace(/[ \t]+$/gm, '');
 }
 
-function requestAllowed(request: Request) {
+function isLocalRequest(request: Request) {
   const hostname = new URL(request.url).hostname;
-  return Boolean(request.headers.get('oai-authenticated-user-id')) || hostname === 'localhost' || hostname === '127.0.0.1';
+  return hostname === 'localhost' || hostname === '127.0.0.1';
+}
+
+async function rateLimit(request: Request, userId: string) {
+  if (isLocalRequest(request)) return null;
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(userId));
+  const key = Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, '0')).join('');
+  const windowStart = Math.floor(Date.now() / 60_000) * 60_000;
+  const db = await ensureProgressSchema();
+  const row = await db.prepare(`
+    INSERT INTO judge_rate_limits (key, window_start, request_count)
+    VALUES (?, ?, 1)
+    ON CONFLICT(key) DO UPDATE SET
+      request_count = CASE WHEN window_start = excluded.window_start THEN request_count + 1 ELSE 1 END,
+      window_start = excluded.window_start
+    RETURNING request_count
+  `).bind(key, windowStart).first<{ request_count: number }>();
+  if ((row?.request_count || 1) > 20) {
+    return Response.json({ error: '每分鐘最多執行 20 次，請稍後再試。' }, { status: 429, headers: { 'Retry-After': '60' } });
+  }
+  return null;
+}
+
+type JudgeResult = {
+  stdout?: string | null;
+  stderr?: string | null;
+  compile_output?: string | null;
+  time?: string | null;
+  memory?: number | null;
+  status?: { description?: string };
+};
+
+async function submitToJudge(
+  endpoints: string[],
+  definition: JudgeDefinition,
+  source: string,
+  input: string,
+  headers: Record<string, string>,
+) {
+  const wrapped = definition.wrap(source, input);
+  let lastError: unknown;
+  for (const endpoint of endpoints) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 12_000);
+    try {
+      const response = await fetch(`${endpoint}/submissions?base64_encoded=false&wait=true`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', accept: 'application/json', ...headers },
+        body: JSON.stringify({
+          language_id: definition.languageId,
+          source_code: wrapped.source,
+          stdin: wrapped.stdin,
+          cpu_time_limit: 3,
+          wall_time_limit: 6,
+          memory_limit: 256000,
+          enable_network: false,
+        }),
+        signal: controller.signal,
+      });
+      if (!response.ok) throw new Error(`Judge service returned ${response.status}`);
+      return { result: await response.json() as JudgeResult, endpoint };
+    } catch (error) {
+      lastError = error;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error('Judge service unavailable');
 }
 
 export async function POST(request: Request) {
-  if (!requestAllowed(request)) return Response.json({ error: '請先登入後使用安全判題。' }, { status: 401 });
+  const identity = getRequestIdentity(request);
+  if (!identity) return Response.json({ error: '請先登入後使用安全判題。' }, { status: 401 });
   if (Number(request.headers.get('content-length') || 0) > 30_000) return Response.json({ error: '程式碼過長。' }, { status: 413 });
 
-  let body: { problemId?: number; source?: string; mode?: 'run' | 'submit' };
+  const limited = await rateLimit(request, identity.userId);
+  if (limited) return limited;
+
+  let body: { problemId?: number; source?: string; mode?: 'run' | 'submit' | 'custom'; customInput?: string };
   try {
     body = await request.json();
   } catch {
@@ -125,52 +198,46 @@ export async function POST(request: Request) {
   const source = typeof body.source === 'string' ? body.source : '';
   if (!definition) return Response.json({ error: '這一題使用教學版結構判題。' }, { status: 422 });
   if (!source.trim() || source.length > 20_000) return Response.json({ error: '請輸入有效且不超過 20,000 字元的程式碼。' }, { status: 400 });
+  if (body.mode === 'custom' && (typeof body.customInput !== 'string' || body.customInput.length > 10_000)) {
+    return Response.json({ error: '自訂輸入不可超過 10,000 字元。' }, { status: 400 });
+  }
 
-  const cases = body.mode === 'run' ? definition.cases.slice(0, Math.min(2, definition.cases.length)) : definition.cases;
+  const cases = body.mode === 'custom'
+    ? [{ input: body.customInput || '', expected: '' }]
+    : body.mode === 'run'
+      ? definition.cases.slice(0, Math.min(2, definition.cases.length))
+      : definition.cases;
   const runtime = env as unknown as Record<string, string | undefined>;
-  const endpoint = (runtime.JUDGE0_API_URL || 'https://ce.judge0.com').replace(/\/$/, '');
+  const primary = (runtime.JUDGE0_API_URL || 'https://ce.judge0.com').replace(/\/$/, '');
+  const fallback = runtime.JUDGE0_FALLBACK_API_URL?.replace(/\/$/, '');
+  const endpoints = Array.from(new Set([primary, fallback].filter((value): value is string => Boolean(value))));
+  const authHeader = runtime.JUDGE0_AUTH_HEADER?.trim();
+  const authToken = runtime.JUDGE0_AUTH_TOKEN?.trim();
+  const judgeHeaders = authHeader && authToken ? { [authHeader]: authToken } : {};
 
   try {
     const results = [];
+    let activeEndpoint = primary;
     for (let index = 0; index < cases.length; index++) {
       const test = cases[index];
-      const wrapped = definition.wrap(source, test.input);
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 12_000);
-      const response = await fetch(`${endpoint}/submissions?base64_encoded=false&wait=true`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', accept: 'application/json' },
-        body: JSON.stringify({
-          language_id: definition.languageId,
-          source_code: wrapped.source,
-          stdin: wrapped.stdin,
-          cpu_time_limit: 3,
-          wall_time_limit: 6,
-          memory_limit: 256000,
-        }),
-        signal: controller.signal,
-      });
-      clearTimeout(timeout);
-      if (!response.ok) throw new Error(`Judge service returned ${response.status}`);
-      const result = await response.json() as {
-        stdout?: string | null; stderr?: string | null; compile_output?: string | null;
-        time?: string | null; memory?: number | null; status?: { description?: string };
-      };
+      const submission = await submitToJudge(endpoints, definition, source, test.input, judgeHeaders);
+      const result = submission.result;
+      activeEndpoint = submission.endpoint;
       const actual = normalizeOutput(result.stdout);
       const expected = normalizeOutput(test.expected);
       results.push({
-        label: `測試 ${index + 1}`,
+        label: body.mode === 'custom' ? '自訂測試' : `測試 ${index + 1}`,
         input: body.mode === 'submit' ? '隱藏測試' : test.input.trim() || '內建資料表',
-        output: body.mode === 'submit' ? '隱藏' : expected,
+        output: body.mode === 'custom' ? '不比對預期輸出' : body.mode === 'submit' ? '隱藏' : expected,
         actual: body.mode === 'submit' ? undefined : actual,
-        passed: result.status?.description === 'Accepted' && actual === expected,
+        passed: result.status?.description === 'Accepted' && (body.mode === 'custom' || actual === expected),
         status: result.status?.description || 'Unknown',
         error: normalizeOutput(result.compile_output || result.stderr),
         time: result.time || null,
         memory: result.memory || null,
       });
     }
-    return Response.json({ results, engine: 'Judge0 CE sandbox' });
+    return Response.json({ results, engine: activeEndpoint === primary && runtime.JUDGE0_API_URL ? 'CodeDive Judge0' : 'Judge0 CE sandbox' });
   } catch (error) {
     const message = error instanceof Error && error.name === 'AbortError'
       ? '判題服務逾時，請稍後重試。'

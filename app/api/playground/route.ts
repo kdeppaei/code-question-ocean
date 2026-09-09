@@ -1,11 +1,13 @@
 import { env } from 'cloudflare:workers';
 import { getRequestIdentity, sameOrigin } from '@/lib/auth';
+import { analyzeGdbScript, buildGdbTranscript } from '@/lib/gdb-guided-runner';
 import { consumeRequestLimit } from '@/lib/rate-limit';
 
 export const dynamic = 'force-dynamic';
 
 const languageIds = { C: 103, 'C++': 105, Python: 109, SQL: 82 } as const;
 type PlaygroundLanguage = keyof typeof languageIds;
+type RequestedLanguage = PlaygroundLanguage | 'GDB';
 
 type JudgeResult = {
   stdout?: string | null;
@@ -30,18 +32,25 @@ export async function POST(request: Request) {
   const limited = await consumeRequestLimit(request, identity.userId, 'playground', 20, 60_000);
   if (limited) return limited;
 
-  let body: { language?: string; source?: string; stdin?: string };
+  let body: { language?: string; source?: string; stdin?: string; targetSource?: string };
   try {
     body = await request.json();
   } catch {
     return Response.json({ error: '資料格式錯誤。' }, { status: 400 });
   }
 
-  if (!(body.language && body.language in languageIds)) return Response.json({ error: '目前支援 C、C++、Python 與 SQL。' }, { status: 400 });
+  if (!(body.language && (body.language in languageIds || body.language === 'GDB'))) return Response.json({ error: '目前支援 C、C++、Python、SQL 與 GDB。' }, { status: 400 });
   if (typeof body.source !== 'string' || !body.source.trim() || body.source.length > 60_000) return Response.json({ error: '請輸入有效且不超過 60,000 字元的程式碼。' }, { status: 400 });
   if (typeof body.stdin !== 'string' || body.stdin.length > 10_000) return Response.json({ error: '標準輸入不可超過 10,000 字元。' }, { status: 400 });
+  if (body.language === 'GDB' && (typeof body.targetSource !== 'string' || !body.targetSource.trim() || body.targetSource.length > 30_000)) return Response.json({ error: '請提供有效且不超過 30,000 字元的目標 C 程式。' }, { status: 400 });
+  if (body.language === 'GDB') {
+    const analysis = analyzeGdbScript(body.source);
+    if (analysis.errors.length) return Response.json({ error: analysis.errors.join('\n') }, { status: 400 });
+  }
 
-  const language = body.language as PlaygroundLanguage;
+  const language = body.language as RequestedLanguage;
+  const judgeLanguage: PlaygroundLanguage = language === 'GDB' ? 'C' : language;
+  const judgeSource = language === 'GDB' ? body.targetSource! : body.source;
   const runtime = env as unknown as Record<string, string | undefined>;
   const primary = (runtime.JUDGE0_API_URL || 'https://ce.judge0.com').replace(/\/$/, '');
   const fallback = runtime.JUDGE0_FALLBACK_API_URL?.replace(/\/$/, '');
@@ -59,8 +68,8 @@ export async function POST(request: Request) {
         method: 'POST',
         headers: { 'content-type': 'application/json', accept: 'application/json', ...headers },
         body: JSON.stringify({
-          language_id: languageIds[language],
-          source_code: body.source,
+          language_id: languageIds[judgeLanguage],
+          source_code: judgeSource,
           stdin: body.stdin,
           cpu_time_limit: 3,
           wall_time_limit: 6,
@@ -71,6 +80,31 @@ export async function POST(request: Request) {
       });
       if (!response.ok) throw new Error(`Judge service returned ${response.status}`);
       const result = await response.json() as JudgeResult;
+      if (language === 'GDB') {
+        if (result.compile_output) {
+          return Response.json({
+            status: result.status?.description || 'Compilation Error',
+            stdout: '',
+            error: clean(result.compile_output),
+            time: result.time || null,
+            memory: result.memory || null,
+            engine: 'CodeDive GDB guided lab',
+          });
+        }
+        const guided = buildGdbTranscript(body.source, {
+          stdout: clean(result.stdout),
+          stderr: clean(result.stderr || result.message),
+          status: result.status?.description,
+        });
+        return Response.json({
+          status: 'GDB Session Ready',
+          stdout: guided.transcript,
+          error: '',
+          time: result.time || null,
+          memory: result.memory || null,
+          engine: 'CodeDive GDB guided lab',
+        });
+      }
       return Response.json({
         status: result.status?.description || 'Unknown',
         stdout: clean(result.stdout),

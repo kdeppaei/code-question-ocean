@@ -1,22 +1,24 @@
 import { uniqueDrillProblems } from '../app/unique-drills';
 import { uniqueDrillProblemsV2 } from '../app/unique-drills-v2';
+import { uniqueDrillProblemsV3 } from '../app/unique-drills-v3';
 import { uniqueJudgeDefinitions } from '../lib/unique-judge-definitions';
 import { uniqueJudgeDefinitionsV2 } from '../lib/unique-judge-definitions-v2';
+import { uniqueJudgeDefinitionsV3 } from '../lib/unique-judge-definitions-v3';
 
 const endpoint = (process.env.JUDGE0_API_URL || 'https://ce.judge0.com').replace(/\/$/, '');
-const newestBatch = process.argv.includes('--all') ? [...uniqueDrillProblems, ...uniqueDrillProblemsV2] : uniqueDrillProblemsV2;
-const definitions = { ...uniqueJudgeDefinitions, ...uniqueJudgeDefinitionsV2 };
+const newestBatch = process.argv.includes('--all') ? [...uniqueDrillProblems, ...uniqueDrillProblemsV2, ...uniqueDrillProblemsV3] : uniqueDrillProblemsV3;
+const definitions = { ...uniqueJudgeDefinitions, ...uniqueJudgeDefinitionsV2, ...uniqueJudgeDefinitionsV3 };
 const executable = newestBatch.filter((problem) => problem.language !== 'GDB');
+const verificationCases = executable.flatMap((problem) => definitions[problem.id].cases.map((test) => ({ problem, test })));
 const failures: string[] = [];
 let cursor = 0;
 
 const normalize = (value: string | null | undefined) => (value || '').replace(/\r/g, '').trim().replace(/[ \t]+$/gm, '');
 
 async function worker() {
-  while (cursor < executable.length) {
-    const problem = executable[cursor++];
+  while (cursor < verificationCases.length) {
+    const { problem, test } = verificationCases[cursor++];
     const definition = definitions[problem.id];
-    const test = definition.cases[0];
     const wrapped = definition.wrap(problem.solution, test.input);
     try {
       const response = await fetch(`${endpoint}/submissions?base64_encoded=false&wait=true`, {
@@ -51,4 +53,4 @@ async function worker() {
 
 await Promise.all(Array.from({ length: 4 }, () => worker()));
 if (failures.length) throw new Error(`Reference solution failures (${failures.length}):\n${failures.join('\n')}`);
-console.log(`Reference solutions verified in Judge0: ${executable.length} newly added executable problems.`);
+console.log(`Reference solutions verified in Judge0: ${executable.length} executable problems across ${verificationCases.length} cases.`);

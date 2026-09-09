@@ -1,6 +1,7 @@
 import type { Language } from '@/app/content';
+import { extraPlaygroundExamples } from './playground-extras';
 
-export type PlaygroundLanguage = Extract<Language, 'C' | 'C++' | 'Python' | 'SQL'>;
+export type PlaygroundLanguage = Extract<Language, 'C' | 'C++' | 'Python' | 'SQL' | 'GDB'>;
 
 export type PlaygroundExample = {
   id: string;
@@ -10,6 +11,7 @@ export type PlaygroundExample = {
   source: string;
   stdin: string;
   concepts: string[];
+  targetSource?: string;
 };
 
 export type QuickReference = {
@@ -19,7 +21,7 @@ export type QuickReference = {
   snippet: string;
 };
 
-export const playgroundExamples: Record<PlaygroundLanguage, PlaygroundExample[]> = {
+const basePlaygroundExamples: Record<Exclude<PlaygroundLanguage, 'GDB'>, PlaygroundExample[]> = {
   C: [
     { id: 'c-io', title: '輸入與格式化輸出', category: '語法基礎', summary: '用 scanf 讀取兩個整數，再用 printf 輸出結果。', stdin: '12 30', concepts: ['scanf', 'printf', 'main'], source: '#include <stdio.h>\n\nint main(void) {\n    int a, b;\n    scanf("%d %d", &a, &b);\n    printf("sum = %d\\n", a + b);\n    return 0;\n}' },
     { id: 'c-array', title: '陣列走訪與最大值', category: '資料結構', summary: '固定容量陣列搭配長度，逐項更新最大值。', stdin: '5\n-3 8 2 11 4', concepts: ['array', 'for', '邊界'], source: '#include <stdio.h>\n\nint main(void) {\n    int n, values[1000];\n    scanf("%d", &n);\n    for (int i = 0; i < n; i++) scanf("%d", &values[i]);\n    int best = values[0];\n    for (int i = 1; i < n; i++)\n        if (values[i] > best) best = values[i];\n    printf("%d\\n", best);\n    return 0;\n}' },
@@ -50,6 +52,14 @@ export const playgroundExamples: Record<PlaygroundLanguage, PlaygroundExample[]>
   ],
 };
 
+export const playgroundExamples: Record<PlaygroundLanguage, PlaygroundExample[]> = {
+  C: [...basePlaygroundExamples.C, ...extraPlaygroundExamples.C],
+  'C++': [...basePlaygroundExamples['C++'], ...extraPlaygroundExamples['C++']],
+  Python: [...basePlaygroundExamples.Python, ...extraPlaygroundExamples.Python],
+  SQL: [...basePlaygroundExamples.SQL, ...extraPlaygroundExamples.SQL],
+  GDB: extraPlaygroundExamples.GDB,
+};
+
 export const quickReferences: Record<PlaygroundLanguage, QuickReference[]> = {
   C: [
     { title: 'main 程式入口', prefix: 'm', note: '回傳 int，成功結束回傳 0。', snippet: 'int main(void) {\n    \n    return 0;\n}' },
@@ -74,5 +84,13 @@ export const quickReferences: Record<PlaygroundLanguage, QuickReference[]> = {
     { title: 'LEFT JOIN', prefix: 'lef', note: '保留左表沒有配對的資料。', snippet: 'LEFT JOIN detail AS d ON d.owner_id = source.id' },
     { title: '群組彙總', prefix: 'gro', note: '非彙總欄位應列在 GROUP BY。', snippet: 'GROUP BY category\nHAVING COUNT(*) > 1' },
     { title: '窗口排名', prefix: 'den', note: 'DENSE_RANK 同分同名次且不跳號。', snippet: 'DENSE_RANK() OVER (PARTITION BY category ORDER BY score DESC)' },
+  ],
+  GDB: [
+    { title: '函式中斷點', prefix: 'b', note: '程式執行到函式入口時暫停。', snippet: 'break function_name' },
+    { title: '開始除錯', prefix: 'r', note: '從程式入口開始執行。', snippet: 'run' },
+    { title: '越過函式', prefix: 'n', note: '執行下一個來源列，不進入函式。', snippet: 'next' },
+    { title: '進入函式', prefix: 's', note: '執行下一列，遇到函式時進入。', snippet: 'step' },
+    { title: '查看運算式', prefix: 'p', note: '顯示變數或運算式的目前值。', snippet: 'print variable_name' },
+    { title: '呼叫堆疊', prefix: 'bt', note: '從當前函式向上列出呼叫鏈。', snippet: 'backtrace' },
   ],
 };

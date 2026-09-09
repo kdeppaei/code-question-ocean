@@ -9,16 +9,17 @@
 ## 目前內容
 
 - C、C++、Python、SQL、GDB 五個專項
-- 150 題經重複稽核的原創練習，五個專項各 30 題，含難度、主題、範例、限制、提示與參考解答
+- 250 題經重複稽核的原創練習，五個專項各 50 題，含難度、主題、範例、限制、提示與參考解答
 - 每一題都有可隨時切換的「顯示解答／隱藏解答」功能
-- 20 組 C／C++ 同題對照，可在解答區比較兩種語法與記憶體管理方式
-- C、C++、Python、SQL 自由程式實驗室，支援 stdin、編譯錯誤與執行輸出
+- 40 組 C／C++ 同題對照，可在解答區比較兩種語法與記憶體管理方式
+- C、C++、Python、SQL 自由程式實驗室，整合 20 個可執行用例、常用語法與資料結構速查、stdin、編譯錯誤與執行輸出
+- 實驗室支援用例一鍵載入、片段點選插入、分語言草稿自動儲存、原始碼複製與下載
 - 題目搜尋、語言／難度篩選與每頁 25 題分頁
 - 10 條演算法與實戰學習路線
 - 左側題目、右側程式碼編輯器的解題工作台
-- 全部 120 題 C、C++、Python、SQL 練習使用 Judge0 CE 安全沙箱實際編譯或執行
-- 30 題 GDB 練習使用引導式結構判題，並保留範例測試與提交紀錄
-- CodeMirror 智慧編輯器，提供五種專項語法高亮與自動完成
+- 全部 200 題 C、C++、Python、SQL 練習使用 Judge0 CE 安全沙箱實際編譯或執行
+- 50 題 GDB 練習使用引導式結構判題，並保留範例測試與提交紀錄
+- CodeMirror 智慧編輯器，提供五種專項語法高亮與前綴自動完成，例如 C 輸入 `pr` 展開 `printf`、輸入 `m` 展開 `main`
 - 多檔分頁草稿、自訂檔名、左右排序與自訂 stdin 測試
 - C、C++、Python、SQL 多檔專案使用 Judge0 Multi-file program 執行；C／C++ 原始檔會分開編譯與連結
 - `Ctrl+Enter` 執行、`Ctrl+Shift+Enter` 提交、`Ctrl+S` 儲存草稿等快捷鍵
@@ -63,4 +64,6 @@ pnpm build
 pnpm verify:coverage
 pnpm audit:questions
 pnpm verify:references
+pnpm verify:editor
+pnpm verify:playground
 ```

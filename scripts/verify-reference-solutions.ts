@@ -1,8 +1,12 @@
 import { uniqueDrillProblems } from '../app/unique-drills';
+import { uniqueDrillProblemsV2 } from '../app/unique-drills-v2';
 import { uniqueJudgeDefinitions } from '../lib/unique-judge-definitions';
+import { uniqueJudgeDefinitionsV2 } from '../lib/unique-judge-definitions-v2';
 
 const endpoint = (process.env.JUDGE0_API_URL || 'https://ce.judge0.com').replace(/\/$/, '');
-const executable = uniqueDrillProblems.filter((problem) => problem.language !== 'GDB');
+const newestBatch = process.argv.includes('--all') ? [...uniqueDrillProblems, ...uniqueDrillProblemsV2] : uniqueDrillProblemsV2;
+const definitions = { ...uniqueJudgeDefinitions, ...uniqueJudgeDefinitionsV2 };
+const executable = newestBatch.filter((problem) => problem.language !== 'GDB');
 const failures: string[] = [];
 let cursor = 0;
 
@@ -11,7 +15,7 @@ const normalize = (value: string | null | undefined) => (value || '').replace(/\
 async function worker() {
   while (cursor < executable.length) {
     const problem = executable[cursor++];
-    const definition = uniqueJudgeDefinitions[problem.id];
+    const definition = definitions[problem.id];
     const test = definition.cases[0];
     const wrapped = definition.wrap(problem.solution, test.input);
     try {

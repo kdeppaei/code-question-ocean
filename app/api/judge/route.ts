@@ -1,6 +1,7 @@
 import { env } from 'cloudflare:workers';
 import { generatedJudgeDefinitions } from '@/lib/generated-judge-definitions';
 import { uniqueJudgeDefinitions } from '@/lib/unique-judge-definitions';
+import { uniqueJudgeDefinitionsV2 } from '@/lib/unique-judge-definitions-v2';
 import { getRequestIdentity } from '@/lib/auth';
 import { ensureProgressSchema } from '@/lib/db';
 import { createMultiFileArchive, validateSourceFiles, type SourceFile } from '@/lib/judge-project';
@@ -109,6 +110,7 @@ const definitions: Record<number, JudgeDefinition> = {
   ...coreDefinitions,
   ...generatedJudgeDefinitions,
   ...uniqueJudgeDefinitions,
+  ...uniqueJudgeDefinitionsV2,
 };
 
 const languageIds: Partial<Record<Language, number>> = { C: 103, 'C++': 105, Python: 109, SQL: 82 };

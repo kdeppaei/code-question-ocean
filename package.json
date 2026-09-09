@@ -11,7 +11,9 @@
     "start": "wrangler dev --config dist/server/wrangler.json",
     "lint": "oxlint",
     "format": "oxfmt",
-    "verify:coverage": "tsx scripts/verify-judge-coverage.ts"
+    "verify:coverage": "tsx scripts/verify-judge-coverage.ts",
+    "audit:questions": "tsx scripts/audit-question-quality.ts",
+    "verify:references": "tsx scripts/verify-reference-solutions.ts"
   },
   "dependencies": {
     "@base-ui/react": "1.7.0",

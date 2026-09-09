@@ -205,12 +205,7 @@ const blueprintDefinitions: JudgeDefinition[] = [
 ];
 
 export const generatedJudgeDefinitions: Record<number, JudgeDefinition> = Object.fromEntries(
-  blueprintDefinitions.flatMap((definition, blueprintIndex) =>
-    [
-      ...Array.from({ length: 6 }, (_, variantIndex) => [21 + blueprintIndex * 6 + variantIndex, definition] as const),
-      ...Array.from({ length: 10 }, (_, variantIndex) => [201 + blueprintIndex * 10 + variantIndex, definition] as const),
-    ],
-  ),
+  blueprintDefinitions.map((definition, blueprintIndex) => [21 + blueprintIndex * 6, definition]),
 );
 
 export const generatedJudgeProblemIds = Object.keys(generatedJudgeDefinitions).map(Number);

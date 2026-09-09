@@ -546,7 +546,7 @@ const originalGeneratedProblems: Problem[] = blueprints.flatMap((blueprint, blue
   }),
 );
 
-const expandedGeneratedProblems: Problem[] = blueprints.flatMap((blueprint, blueprintIndex) =>
+export const expandedGeneratedProblems: Problem[] = blueprints.flatMap((blueprint, blueprintIndex) =>
   expansionVariants.map((variant, variantIndex) => {
     const id = 201 + blueprintIndex * expansionVariants.length + variantIndex;
     return {
@@ -579,4 +579,8 @@ const expandedGeneratedProblems: Problem[] = blueprints.flatMap((blueprint, blue
   }),
 );
 
-export const generatedProblems: Problem[] = [...originalGeneratedProblems, ...expandedGeneratedProblems];
+// Only expose the first, canonical version of every blueprint. Older releases
+// repeated each blueprint under labels such as "基礎版" and "邊界版" without
+// changing the actual task or solution. Keeping one canonical problem makes the
+// visible count honest while legacy IDs are migrated in app/page.tsx.
+export const generatedProblems: Problem[] = originalGeneratedProblems.filter((_, index) => index % variants.length === 0);

@@ -4,6 +4,7 @@ import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import {
   ArrowLeft,
   ArrowRight,
+  ArrowRightLeft,
   BookOpen,
   Braces,
   Bug,
@@ -21,6 +22,7 @@ import {
   EyeOff,
   FileCode2,
   Flame,
+  FlaskConical,
   House,
   Lightbulb,
   ListChecks,
@@ -47,6 +49,8 @@ import { Progress } from '@/components/ui/progress';
 import { Textarea } from '@/components/ui/textarea';
 import { AdminPanel, LeaderboardPanel, type SessionInfo } from '@/components/platform-panels';
 import { CoachPanel } from '@/components/coach-panel';
+import { PlaygroundPanel } from '@/components/playground-panel';
+import { getCrossLanguageSolution } from '@/lib/cross-language';
 import {
   languageMeta,
   lessons,
@@ -60,7 +64,7 @@ import { algorithmTracks } from './drills';
 
 const CodeEditor = lazy(() => import('@/components/code-editor').then((module) => ({ default: module.CodeEditor })));
 
-type View = 'home' | 'problems' | 'workspace' | 'learn' | 'algorithms' | 'progress' | 'favorites' | 'leaderboard' | 'admin';
+type View = 'home' | 'problems' | 'workspace' | 'playground' | 'learn' | 'algorithms' | 'progress' | 'favorites' | 'leaderboard' | 'admin';
 type CodeFile = { id: string; name: string; content: string };
 type PlatformProblem = Problem & { judgeReady?: boolean };
 type RunResult = {
@@ -104,6 +108,7 @@ const languageIcons: Record<Language, typeof Braces> = {
 const navItems: { view: View; label: string; icon: typeof House }[] = [
   { view: 'home', label: '學習總覽', icon: House },
   { view: 'problems', label: '題庫', icon: ListChecks },
+  { view: 'playground', label: '程式實驗室', icon: FlaskConical },
   { view: 'learn', label: '教學路徑', icon: BookOpen },
   { view: 'algorithms', label: '演算法路線', icon: Map },
   { view: 'progress', label: '學習分析', icon: ChartNoAxesColumnIncreasing },
@@ -127,6 +132,24 @@ function nextUnique(list: number[], value: number) {
   return list.includes(value) ? list : [...list, value];
 }
 
+function canonicalProblemId(id: number) {
+  if (id >= 21 && id <= 200) return 21 + Math.floor((id - 21) / 6) * 6;
+  if (id >= 201 && id <= 500) return 21 + Math.floor((id - 201) / 10) * 6;
+  return id;
+}
+
+function canonicalizeLearningState(state: LearningState): LearningState {
+  const ids = (items: number[]) => Array.from(new Set(items.map(canonicalProblemId)));
+  return {
+    ...state,
+    solved: ids(state.solved),
+    attempted: ids(state.attempted),
+    wrong: ids(state.wrong),
+    favorites: ids(state.favorites),
+    history: state.history.map((item) => ({ ...item, id: canonicalProblemId(item.id) })),
+  };
+}
+
 const fileExtensions: Record<Language, string> = { C: 'c', 'C++': 'cpp', Python: 'py', SQL: 'sql', GDB: 'gdb' };
 
 function initialFiles(problem: Problem): CodeFile[] {
@@ -147,7 +170,9 @@ function parseDraft(problem: Problem, value: string | null): CodeFile[] {
 }
 
 function mergeLearningState(local: LearningState, remote: LearningState): LearningState {
-  const mergeIds = (first: number[], second: number[]) => Array.from(new Set([...first, ...second]));
+  local = canonicalizeLearningState(local);
+  remote = canonicalizeLearningState(remote);
+  const mergeIds = (first: number[], second: number[]) => Array.from(new Set([...first, ...second].map(canonicalProblemId)));
   const history = [...local.history, ...remote.history]
     .filter((item, index, items) => items.findIndex((candidate) => candidate.id === item.id && candidate.at === item.at && candidate.passed === item.passed) === index)
     .sort((a, b) => b.at.localeCompare(a.at))
@@ -193,6 +218,7 @@ export default function Home() {
   const [hydrated, setHydrated] = useState(false);
   const [dark, setDark] = useState(false);
   const [showSolution, setShowSolution] = useState(false);
+  const [showConvertedSolution, setShowConvertedSolution] = useState(false);
   const [judgeLoading, setJudgeLoading] = useState(false);
   const [judgeError, setJudgeError] = useState('');
   const [syncState, setSyncState] = useState<SyncState>('loading');
@@ -209,6 +235,10 @@ export default function Home() {
   const setCode = (value: string) => setFiles((current) => current.map((file) => file.id === activeFileId ? { ...file, content: value } : file));
   const submissionSource = files.map((file) => file.content).join('\n\n');
   const allProblems = useMemo(() => [...problems, ...customProblems].sort((a, b) => a.id - b.id), [customProblems]);
+  const pairedProblem = selectedProblem.pairedProblemId
+    ? allProblems.find((problem) => problem.id === selectedProblem.pairedProblemId)
+    : undefined;
+  const convertedSolution = getCrossLanguageSolution(selectedProblem, pairedProblem);
   const visibleNavItems = useMemo(() => session?.isAdmin
     ? [...navItems, { view: 'admin' as View, label: '題庫管理', icon: ShieldCheck }]
     : navItems, [session?.isAdmin]);
@@ -226,7 +256,7 @@ export default function Home() {
     try {
       const saved = localStorage.getItem('codedive-learning-v1');
       const theme = localStorage.getItem('codedive-theme');
-      if (saved) localState = { ...emptyLearningState, ...JSON.parse(saved) };
+      if (saved) localState = canonicalizeLearningState({ ...emptyLearningState, ...JSON.parse(saved) });
       if (theme === 'dark') {
         document.documentElement.classList.add('dark');
       }
@@ -339,6 +369,7 @@ export default function Home() {
     setResults([]);
     setResultMode('idle');
     setShowSolution(false);
+    setShowConvertedSolution(false);
     setJudgeError('');
     setEditorNotice(savedDraft ? '已載入上次儲存的草稿' : '');
     setView('workspace');
@@ -540,7 +571,7 @@ export default function Home() {
                   <Badge className="mb-4 bg-primary/10 text-primary"><Flame className="mr-1 size-3" />今日學習工作台</Badge>
                   <h1 className="max-w-3xl text-3xl font-black leading-[1.13] tracking-[-.04em] md:text-5xl">學懂觀念，寫出程式，<br className="hidden sm:block" />用題目驗證自己。</h1>
                   <p className="mt-4 max-w-2xl text-sm leading-7 text-muted-foreground md:text-base">以 LeetCode 式解題流程為核心，串起 C、C++、Python、SQL 與 GDB 的繁體中文教學。每題都有提示、範例、結構檢查與詳解。</p>
-                  <div className="mt-6 flex flex-wrap gap-2"><Button className="h-11 gap-2 px-5" onClick={() => changeView('problems')}><ListChecks />開始選題</Button><Button className="h-11 gap-2 px-5" variant="outline" onClick={() => changeView('algorithms')}><Map />演算法路線</Button><Button className="h-11 gap-2 px-5" variant="outline" onClick={() => changeView('learn')}><BookOpen />先看教學</Button></div>
+                  <div className="mt-6 flex flex-wrap gap-2"><Button className="h-11 gap-2 px-5" onClick={() => changeView('problems')}><ListChecks />開始選題</Button><Button className="h-11 gap-2 px-5" variant="outline" onClick={() => changeView('playground')}><FlaskConical />自由試寫</Button><Button className="h-11 gap-2 px-5" variant="outline" onClick={() => changeView('algorithms')}><Map />演算法路線</Button><Button className="h-11 gap-2 px-5" variant="outline" onClick={() => changeView('learn')}><BookOpen />先看教學</Button></div>
                 </div>
                 <div className="rounded-2xl border bg-secondary/60 p-5">
                   <div className="flex items-center justify-between"><div><p className="text-xs font-bold text-muted-foreground">TODAY</p><strong className="mt-1 block text-lg">每日 10 題</strong></div><span className="font-mono text-2xl font-black text-primary">{Math.min(todayCount, 10)}<small className="text-sm text-muted-foreground"> / 10</small></span></div>
@@ -653,7 +684,7 @@ export default function Home() {
               learning={{ solved: learning.solved.length, wrong: learning.wrong.length, submissions: learning.submissions, accuracy }}
               session={session}
             />
-            {showSolution && <section className="mt-3 rounded-xl border border-primary/20 bg-card p-6 shadow-sm" aria-live="polite"><div className="flex items-start gap-3"><span className="grid size-10 shrink-0 place-items-center rounded-xl bg-primary/10 text-primary"><Eye className="size-5" /></span><div className="min-w-0 flex-1"><p className="text-xs font-black tracking-[.12em] text-primary">REFERENCE SOLUTION</p><h2 className="mt-1 text-xl font-black">參考解答與思路</h2><p className="mt-3 max-w-4xl text-sm leading-7 text-muted-foreground">{selectedProblem.explanation}</p><pre className="mt-4 overflow-x-auto rounded-xl bg-[#111827] p-5 font-mono text-xs leading-6 text-slate-100"><code>{selectedProblem.solution}</code></pre></div></div></section>}
+            {showSolution && <section className="mt-3 rounded-xl border border-primary/20 bg-card p-6 shadow-sm" aria-live="polite"><div className="flex items-start gap-3"><span className="grid size-10 shrink-0 place-items-center rounded-xl bg-primary/10 text-primary"><Eye className="size-5" /></span><div className="min-w-0 flex-1"><p className="text-xs font-black tracking-[.12em] text-primary">REFERENCE SOLUTION</p><div className="flex flex-wrap items-center justify-between gap-3"><h2 className="mt-1 text-xl font-black">參考解答與思路</h2>{convertedSolution && <Button variant="outline" className="gap-2" onClick={() => setShowConvertedSolution((visible) => !visible)}><ArrowRightLeft className="size-4" />{showConvertedSolution ? '收起語法對照' : `${selectedProblem.language} → ${convertedSolution.targetLanguage} 對照`}</Button>}</div><p className="mt-3 max-w-4xl text-sm leading-7 text-muted-foreground">{selectedProblem.explanation}</p><div className={`mt-4 grid gap-3 ${showConvertedSolution && convertedSolution ? 'xl:grid-cols-2' : ''}`}><div><p className="mb-2 text-xs font-black text-muted-foreground">{selectedProblem.language} 原始解答</p><pre className="overflow-x-auto rounded-xl bg-[#111827] p-5 font-mono text-xs leading-6 text-slate-100"><code>{selectedProblem.solution}</code></pre></div>{showConvertedSolution && convertedSolution && <div><p className="mb-2 text-xs font-black text-primary">{convertedSolution.targetLanguage} 對照解答</p><pre className="overflow-x-auto rounded-xl bg-[#111827] p-5 font-mono text-xs leading-6 text-slate-100"><code>{convertedSolution.code}</code></pre><ul className="mt-3 list-inside list-disc space-y-1 text-xs leading-6 text-muted-foreground">{convertedSolution.differences.map((difference) => <li key={difference}>{difference}</li>)}</ul></div>}</div>{(selectedProblem.language === 'C' || selectedProblem.language === 'C++') && !convertedSolution && <p className="mt-3 text-xs text-muted-foreground">此題目前沒有可靠的一對一轉換；為避免提供錯誤語法，不使用機械式翻譯。</p>}</div></div></section>}
             {resultMode === 'submit' && results.every((result) => result.passed) && <section className="mt-3 rounded-xl border bg-emerald-50 p-5 text-emerald-800 shadow-sm dark:bg-emerald-950/30 dark:text-emerald-200"><div className="flex items-center gap-3"><Trophy className="size-5" /><div><strong>提交成功，這題已記入學習進度。</strong><p className="mt-1 text-xs opacity-80">可以前往下一題，或用上方按鈕比較參考解答。</p></div></div></section>}
           </div>
         )}
@@ -664,6 +695,13 @@ export default function Home() {
               <PageTitle eyebrow="LEARNING PATHS" title="短篇教學，讀完立刻練" copy="內容採小章節設計，像 W3Schools 一樣容易查閱；每章都連到一題可動手驗證的練習。" />
               <div className="mt-7 space-y-8">{(Object.keys(languageMeta) as Language[]).map((language) => { const meta = languageMeta[language]; const Icon = languageIcons[language]; return <section key={language}><div className="mb-3 flex items-center gap-3"><span className="grid size-10 place-items-center rounded-xl" style={{ background: meta.soft, color: meta.color }}><Icon className="size-5" /></span><div><h2 className="text-lg font-black">{language} 學習路徑</h2><p className="text-xs text-muted-foreground">{meta.description}</p></div></div><div className="grid gap-3 md:grid-cols-3">{lessons.filter((lesson) => lesson.language === language).map((lesson, index) => <button key={lesson.id} onClick={() => setSelectedLesson(lesson)} className="group rounded-2xl border bg-card p-5 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md"><div className="flex items-center justify-between"><span className="font-mono text-xs font-black text-primary">{String(index + 1).padStart(2, '0')}</span><span className="rounded-full bg-secondary px-2 py-1 text-[10px] font-bold text-muted-foreground">{lesson.level} · {lesson.minutes} 分鐘</span></div><h3 className="mt-5 text-lg font-black group-hover:text-primary">{lesson.title}</h3><p className="mt-2 min-h-12 text-sm leading-6 text-muted-foreground">{lesson.description}</p><span className="mt-5 flex items-center gap-1 text-xs font-bold text-primary">開始閱讀 <ChevronRight className="size-3" /></span></button>)}</div></section>; })}</div>
             </>}
+          </div>
+        )}
+
+        {view === 'playground' && (
+          <div className="mx-auto max-w-[1500px] space-y-6 p-4 md:p-7">
+            <PageTitle eyebrow="CODE PLAYGROUND" title="自由試寫與執行程式" copy="選擇 C、C++、Python 或 SQL，貼上自己的程式與標準輸入，直接查看編譯或執行結果。程式只送往受限沙箱執行，不會存進題庫。" />
+            <PlaygroundPanel />
           </div>
         )}
 
